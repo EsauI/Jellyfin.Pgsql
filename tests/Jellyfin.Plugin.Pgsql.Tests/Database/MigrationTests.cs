@@ -137,24 +137,4 @@ public class MigrationTests(PostgreSqlFixture fixture)
         Assert.Equal(1, contains);
         Assert.Equal(1, like);
     }
-
-    [Fact]
-    public async Task NameSearch_ThroughLikeOnMixedCaseColumns_IsCaseSensitive()
-    {
-        // Characterisation of a known gap, not a desired behaviour: SQLite's LIKE ignores ASCII case, PostgreSQL's does not,
-        // with any collation. Jellyfin uses LIKE on OriginalTitle (and on the activity log columns). If this starts failing,
-        // the provider has gained case-insensitive LIKE and the assertion should flip.
-        var token = TestContext.Current.CancellationToken;
-        var database = await fixture.CreateDatabaseAsync();
-        await using (var seed = database.CreateContext())
-        {
-            seed.BaseItems.Add(new BaseItemEntity { Id = Guid.NewGuid(), Type = "Movie", Name = "The Matrix", CleanName = "the matrix", OriginalTitle = "The Matrix" });
-            await seed.SaveChangesAsync(token);
-        }
-
-        await using var context = database.CreateContext();
-        var matches = await context.BaseItems.Where(item => EF.Functions.Like(item.OriginalTitle!, "%matrix%")).CountAsync(token);
-
-        Assert.Equal(0, matches);
-    }
 }

@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -66,6 +67,7 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
             connection.ConnectionString,
             npgsql => npgsql.MigrationsAssembly(typeof(PostgreSqlDatabaseProvider).Assembly.GetName().Name));
         options.AddInterceptors(_restoreCompletion);
+        ((IDbContextOptionsBuilderInfrastructure)options).AddOrUpdateExtension(new CaseInsensitiveLikeExtension());
 
         LogConnecting(connection.Host, connection.Port, connection.Database);
     }
