@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Jellyfin.Plugin.Pgsql.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="Jellyfin.Controller" />
+    <PackageReference Include="Jellyfin.Model" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Jellyfin.Plugin.Pgsql\Jellyfin.Plugin.Pgsql.csproj" />
+  </ItemGroup>
+
+</Project>

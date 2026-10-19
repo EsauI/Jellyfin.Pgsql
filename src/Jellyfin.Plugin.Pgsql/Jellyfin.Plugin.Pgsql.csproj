@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Jellyfin.Plugin.Pgsql</RootNamespace>
+    <AssemblyName>Jellyfin.Plugin.Pgsql</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Jellyfin.Controller" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Model" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Database.Implementations" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+</Project>

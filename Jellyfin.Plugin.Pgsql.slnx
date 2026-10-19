@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Jellyfin.Plugin.Pgsql/Jellyfin.Plugin.Pgsql.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Jellyfin.Plugin.Pgsql.Tests/Jellyfin.Plugin.Pgsql.Tests.csproj" />
+  </Folder>
+</Solution>
