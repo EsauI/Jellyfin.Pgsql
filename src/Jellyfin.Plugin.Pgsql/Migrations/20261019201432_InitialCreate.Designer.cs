@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Jellyfin.Plugin.Pgsql.Migrations
 {
     [DbContext(typeof(JellyfinDbContext))]
-    [Migration("20261019200356_InitialCreate")]
+    [Migration("20261019201432_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -20,7 +20,6 @@ namespace Jellyfin.Plugin.Pgsql.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .UseCollation("C")
                 .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 

@@ -6,6 +6,7 @@ using Jellyfin.Database.Implementations.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 using Xunit;
 
@@ -45,24 +46,51 @@ public class MigrationTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
-    public async Task Migrations_ApplyAfterTheServerSeededItsCodeMigrationHistory()
+    public async Task Migrations_ReplayTheServersFreshInstallSequence()
     {
-        // On a fresh install Jellyfin creates the history table and records its code migrations before any EF migration runs
-        // (JellyfinMigrationService.cs:116-128), then applies this plugin's migrations one by one through IMigrator.
+        // Jellyfin never calls MigrateAsync. On a fresh install it records its code migrations in the history table
+        // (JellyfinMigrationService.cs:116-128), then applies the pending EF migrations one by one through IMigrator.
+        var token = TestContext.Current.CancellationToken;
         var database = await fixture.CreateEmptyDatabaseAsync();
         await using var context = database.CreateContext();
         var history = context.GetService<IHistoryRepository>();
-        await history.CreateIfNotExistsAsync(TestContext.Current.CancellationToken);
-        await context.Database.ExecuteSqlRawAsync(
-            history.GetInsertScript(new HistoryRow("20250420230000_SeededCodeMigration", "12.2.0")),
-            TestContext.Current.CancellationToken);
-        var migration = context.GetService<IMigrationsAssembly>().Migrations.Single().Key;
+        await history.CreateIfNotExistsAsync(token);
+        foreach (var id in Jellyfin122CodeMigrations.SeededIds)
+        {
+            await context.Database.ExecuteSqlRawAsync(history.GetInsertScript(new HistoryRow(id, "12.2.0")), token);
+        }
 
-        await context.GetService<IMigrator>().MigrateAsync(migration, TestContext.Current.CancellationToken);
+        var pending = context.GetService<IMigrationsAssembly>().Migrations.Keys.Order(StringComparer.Ordinal).ToArray();
+        foreach (var migration in pending)
+        {
+            await context.GetService<IMigrator>().MigrateAsync(migration, token);
+        }
 
-        var applied = await context.Database.GetAppliedMigrationsAsync(TestContext.Current.CancellationToken);
-        Assert.Contains("20250420230000_SeededCodeMigration", applied);
-        Assert.Contains(migration, applied);
+        var applied = (await history.GetAppliedMigrationsAsync(token)).Select(row => row.MigrationId).ToArray();
+        Assert.All(Jellyfin122CodeMigrations.SeededIds, id => Assert.Contains(id, applied));
+        Assert.Equal(Jellyfin122CodeMigrations.SeededIds.Count + pending.Length, applied.Length);
+        Assert.Equal(pending, applied.Where(id => id.EndsWith("_InitialCreate", StringComparison.Ordinal)).ToArray());
+        Assert.All(Jellyfin122CodeMigrations.SeededIds, id => Assert.True(string.CompareOrdinal(id, pending[0]) < 0));
+        Assert.Empty(await context.Database.GetPendingMigrationsAsync(token));
+        Assert.True(await context.BaseItems.AnyAsync(item => item.Type == "PLACEHOLDER", token));
+    }
+
+    [Fact]
+    public async Task Database_CreatedByTheServerBeforeMigrating_ThenAcceptsTheMigrations()
+    {
+        // Jellyfin creates a missing database itself (JellyfinMigrationService.cs:110) before any migration runs.
+        var token = TestContext.Current.CancellationToken;
+        var database = fixture.GetNotYetCreatedDatabase();
+        await using var context = database.CreateContext();
+        var creator = context.GetService<IDatabaseCreator>() as IRelationalDatabaseCreator;
+        Assert.NotNull(creator);
+        Assert.False(await creator.ExistsAsync(token));
+
+        await creator.CreateAsync(token);
+        await context.Database.MigrateAsync(token);
+
+        Assert.True(await creator.ExistsAsync(token));
+        Assert.Empty(await context.Database.GetPendingMigrationsAsync(token));
     }
 
     [Fact]
@@ -75,11 +103,11 @@ public class MigrationTests(PostgreSqlFixture fixture)
     }
 
     [Theory]
-    [InlineData("IX_BaseItems_OwnerId", "OwnerId")]
-    [InlineData("IX_BaseItems_ExtraType_OwnerId", "ExtraType")]
-    [InlineData("IX_BaseItems_PrimaryVersionId", "PrimaryVersionId")]
-    [InlineData("IX_BaseItems_TopParentId_Type_IsVirtualItem", "PrimaryVersionId")]
-    public async Task PartialIndexes_ExistWithAWhereClause(string indexName, string filteredColumn)
+    [InlineData("IX_BaseItems_OwnerId", "(\"OwnerId\" IS NOT NULL)")]
+    [InlineData("IX_BaseItems_ExtraType_OwnerId", "(\"ExtraType\" IS NOT NULL)")]
+    [InlineData("IX_BaseItems_PrimaryVersionId", "(\"PrimaryVersionId\" IS NOT NULL)")]
+    [InlineData("IX_BaseItems_TopParentId_Type_IsVirtualItem", "((\"PrimaryVersionId\" IS NULL) AND ((\"OwnerId\" IS NULL) OR (\"ExtraType\" IS NOT NULL)))")]
+    public async Task PartialIndexes_ExistWithTheExactWhereClause(string indexName, string expectedPredicate)
     {
         var database = await fixture.CreateDatabaseAsync();
         await using var connection = new NpgsqlConnection(database.ConnectionString);
@@ -91,8 +119,7 @@ public class MigrationTests(PostgreSqlFixture fixture)
         var definition = (string?)await command.ExecuteScalarAsync(TestContext.Current.CancellationToken);
 
         Assert.NotNull(definition);
-        Assert.Contains(" WHERE ", definition, StringComparison.Ordinal);
-        Assert.Contains($"\"{filteredColumn}\"", definition[definition.IndexOf(" WHERE ", StringComparison.Ordinal)..], StringComparison.Ordinal);
+        Assert.EndsWith(" WHERE " + expectedPredicate, definition, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -118,10 +145,10 @@ public class MigrationTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
-    public async Task NameSearch_ThroughCleanName_IsCaseInsensitiveUnderTheCCollation()
+    public async Task NameSearch_ThroughTheLowerCasedCleanName_FindsMixedCaseTitles()
     {
         // Jellyfin lower-cases the search term (GetCleanValue) and matches it against the already-clean CleanName, so the
-        // case-sensitive "C" collation does not change the result (BaseItemRepository.TranslateQuery.cs:262-273).
+        // search does not depend on any database collation (BaseItemRepository.TranslateQuery.cs:262-273).
         var token = TestContext.Current.CancellationToken;
         var database = await fixture.CreateDatabaseAsync();
         await using (var seed = database.CreateContext())

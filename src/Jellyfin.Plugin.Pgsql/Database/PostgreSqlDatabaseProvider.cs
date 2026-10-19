@@ -76,10 +76,6 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
     public void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
-
-        // SQLite compares and sorts strings with its BINARY collation (ordinal, case-sensitive). The "C" collation
-        // is the PostgreSQL equivalent and keeps ordering independent of the cluster's locale.
-        modelBuilder.UseCollation("C");
     }
 
     /// <inheritdoc/>

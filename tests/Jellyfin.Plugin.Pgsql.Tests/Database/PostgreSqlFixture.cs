@@ -31,6 +31,16 @@ public sealed class PostgreSqlFixture : IAsyncLifetime
     }
 
     /// <summary>
+    /// Returns a provider wired to a database name that does not exist on the server yet.
+    /// </summary>
+    /// <returns>A database the test has to create itself.</returns>
+    public TestDatabase GetNotYetCreatedDatabase()
+    {
+        var name = "jf_" + Guid.NewGuid().ToString("N");
+        return new TestDatabase(new NpgsqlConnectionStringBuilder(_container.GetConnectionString()) { Database = name }.ConnectionString);
+    }
+
+    /// <summary>
     /// Creates a database without any schema and returns a provider wired to it.
     /// </summary>
     /// <returns>The new database.</returns>

@@ -72,11 +72,12 @@ public class PostgreSqlDatabaseProviderTests
     }
 
     [Fact]
-    public void OnModelCreating_UsesBinaryCollation()
+    public void OnModelCreating_SetsNoDatabaseLevelCollation()
     {
         var model = BuildModel(CreateProvider());
 
-        Assert.Equal("C", model.GetCollation());
+        Assert.Null(model.GetCollation());
+        Assert.Null(model.FindAnnotation("Relational:Collation"));
     }
 
     [Fact]
