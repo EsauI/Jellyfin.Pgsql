@@ -52,5 +52,6 @@ dotnet_diagnostic.CA2007.severity = none  # ConfigureAwait not needed in ASP.NET
 
 [tests/**.cs]
 dotnet_diagnostic.CA1707.severity = none  # underscores in test names
+dotnet_diagnostic.CA1515.severity = none  # xUnit fixtures and test classes must be public
 dotnet_diagnostic.SA1600.severity = none
 dotnet_diagnostic.CS1591.severity = none

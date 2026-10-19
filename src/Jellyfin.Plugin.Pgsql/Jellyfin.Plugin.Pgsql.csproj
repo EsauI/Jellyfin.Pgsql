@@ -9,6 +9,11 @@
     <PackageReference Include="Jellyfin.Controller" PrivateAssets="all" ExcludeAssets="runtime" />
     <PackageReference Include="Jellyfin.Model" PrivateAssets="all" ExcludeAssets="runtime" />
     <PackageReference Include="Jellyfin.Database.Implementations" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Jellyfin.Plugin.Pgsql.Tests" />
   </ItemGroup>
 
 </Project>
