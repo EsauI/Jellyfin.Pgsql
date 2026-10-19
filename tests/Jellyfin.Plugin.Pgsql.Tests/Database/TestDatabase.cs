@@ -21,6 +21,7 @@ public sealed class TestDatabase
 
     public TestDatabase(string connectionString)
     {
+        ConnectionString = connectionString;
         Provider = new PostgreSqlDatabaseProvider(NullLogger<PostgreSqlDatabaseProvider>.Instance);
         var builder = new DbContextOptionsBuilder<JellyfinDbContext>();
         _configuration = new DatabaseConfigurationOptions
@@ -35,13 +36,12 @@ public sealed class TestDatabase
         };
         Provider.Initialise(builder, _configuration);
         _options = builder.Options;
-        ConnectionString = connectionString;
         Provider.DbContextFactory = new Factory(this);
     }
 
-    public PostgreSqlDatabaseProvider Provider { get; }
-
     public string ConnectionString { get; }
+
+    public PostgreSqlDatabaseProvider Provider { get; }
 
     /// <summary>
     /// Creates a factory that pools contexts the way the server does (<c>AddPooledDbContextFactory</c>).

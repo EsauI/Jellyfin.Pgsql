@@ -6,10 +6,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jellyfin.Controller" PrivateAssets="all" ExcludeAssets="runtime" />
-    <PackageReference Include="Jellyfin.Model" PrivateAssets="all" ExcludeAssets="runtime" />
-    <PackageReference Include="Jellyfin.Database.Implementations" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Controller" PrivateAssets="all" Publish="false" />
+    <PackageReference Include="Jellyfin.Model" PrivateAssets="all" Publish="false" />
+    <PackageReference Include="Jellyfin.Database.Implementations" PrivateAssets="all" Publish="false" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
