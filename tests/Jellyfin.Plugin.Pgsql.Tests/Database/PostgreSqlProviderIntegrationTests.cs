@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -98,6 +99,31 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
         Assert.False(await verify.ActivityLogs.AnyAsync(token));
     }
 
+    [Fact]
+    public async Task PurgeDatabase_ThenRestoreRowsWithIds_NextInsertGetsFreshId()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var database = await fixture.CreateDatabaseAsync();
+        var backup = await SeedActivityLogsAsync(database, 3, token);
+
+        await RestoreLikeBackupServiceAsync(database, backup, token);
+
+        await AssertNextInsertSucceedsAsync(database, expectedCount: 4, token);
+    }
+
+    [Fact]
+    public async Task PurgeDatabase_ThenRestoreIntoAnotherDatabase_NextInsertGetsFreshId()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var source = await fixture.CreateDatabaseAsync();
+        var backup = await SeedActivityLogsAsync(source, 3, token);
+        var target = await fixture.CreateDatabaseAsync();
+
+        await RestoreLikeBackupServiceAsync(target, backup, token);
+
+        await AssertNextInsertSucceedsAsync(target, expectedCount: 4, token);
+    }
+
     [Theory]
     [InlineData("NoSuchTable")]
     [InlineData("ActivityLogs\"; DROP TABLE \"Users\"; --")]
@@ -143,5 +169,43 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
         var stored = (await read.ActivityLogs.AsNoTracking().ToListAsync(token)).Single().DateCreated;
         Assert.Equal(DateTimeKind.Utc, stored.Kind);
         Assert.Equal(expectedUtc, stored);
+    }
+
+    private static async Task<ActivityLog[]> SeedActivityLogsAsync(TestDatabase database, int count, CancellationToken token)
+    {
+        await using var seed = database.CreateContext();
+        for (var i = 0; i < count; i++)
+        {
+            seed.ActivityLogs.Add(new ActivityLog("entry" + i, "test", Guid.NewGuid()));
+        }
+
+        await seed.SaveChangesAsync(token);
+        return await seed.ActivityLogs.AsNoTracking().ToArrayAsync(token);
+    }
+
+    // Mirrors Jellyfin 12.2 BackupService.RestoreBackupAsync: purge with schema-qualified names, add rows with ids, save once.
+    private static async Task RestoreLikeBackupServiceAsync(TestDatabase database, ActivityLog[] backup, CancellationToken token)
+    {
+        await using var restore = database.CreateContext();
+        var tableNames = restore.Model.GetEntityTypes()
+            .Select(entity => entity.GetSchemaQualifiedTableName())
+            .OfType<string>()
+            .Distinct()
+            .ToList();
+        await database.Provider.PurgeDatabase(restore, tableNames);
+        foreach (var row in backup)
+        {
+            restore.Add(row);
+        }
+
+        await restore.SaveChangesAsync(token);
+    }
+
+    private static async Task AssertNextInsertSucceedsAsync(TestDatabase database, int expectedCount, CancellationToken token)
+    {
+        await using var after = database.CreateContext();
+        after.ActivityLogs.Add(new ActivityLog("new", "test", Guid.NewGuid()));
+        await after.SaveChangesAsync(token);
+        Assert.Equal(expectedCount, await after.ActivityLogs.CountAsync(token));
     }
 }

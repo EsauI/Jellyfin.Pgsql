@@ -24,6 +24,7 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
         + "The password may be supplied through the standard PGPASSWORD environment variable or a .pgpass file.";
 
     private readonly ILogger<PostgreSqlDatabaseProvider> _logger;
+    private readonly IdentitySequenceResynchronizer _sequenceResynchronizer = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PostgreSqlDatabaseProvider"/> class.
@@ -63,6 +64,7 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
         options.UseNpgsql(
             connection.ConnectionString,
             npgsql => npgsql.MigrationsAssembly(typeof(PostgreSqlDatabaseProvider).Assembly.GetName().Name));
+        options.AddInterceptors(_sequenceResynchronizer);
 
         LogConnecting(connection.Host, connection.Port, connection.Database);
     }
@@ -178,6 +180,8 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
         await dbContext.Database.ExecuteSqlRawAsync($"TRUNCATE TABLE {targets} RESTART IDENTITY CASCADE").ConfigureAwait(false);
 #pragma warning restore EF1002, CA2100
 
+        // A restore follows with rows that keep their original ids; resync the sequences after that save.
+        _sequenceResynchronizer.MarkPending();
         LogPurged(selected.Count);
     }
 
