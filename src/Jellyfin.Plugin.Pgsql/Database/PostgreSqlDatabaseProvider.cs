@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -66,6 +67,7 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
             connection.ConnectionString,
             npgsql => npgsql.MigrationsAssembly(typeof(PostgreSqlDatabaseProvider).Assembly.GetName().Name));
         options.AddInterceptors(_restoreCompletion);
+        ((IDbContextOptionsBuilderInfrastructure)options).AddOrUpdateExtension(new CaseInsensitiveLikeExtension());
 
         LogConnecting(connection.Host, connection.Port, connection.Database);
     }
@@ -74,10 +76,6 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
     public void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
-
-        // SQLite compares and sorts strings with its BINARY collation (ordinal, case-sensitive). The "C" collation
-        // is the PostgreSQL equivalent and keeps ordering independent of the cluster's locale.
-        modelBuilder.UseCollation("C");
     }
 
     /// <inheritdoc/>
