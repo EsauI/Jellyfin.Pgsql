@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using Xunit;
 
 namespace Jellyfin.Plugin.Pgsql.Tests.Database;
@@ -68,6 +69,31 @@ public class PostgreSqlDatabaseProviderTests
             () => provider.Initialise(new DbContextOptionsBuilder(), configuration));
 
         Assert.Contains("63 bytes", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Initialise_WithoutDatabase_UsesTheUsernameAsPostgreSqlDoes()
+    {
+        var provider = CreateProvider();
+        var builder = new DbContextOptionsBuilder();
+
+        provider.Initialise(builder, CreateConfiguration("Host=db.example;Username=jf"));
+
+        var configured = new NpgsqlConnectionStringBuilder(
+            builder.Options.Extensions.OfType<RelationalOptionsExtension>().Single().ConnectionString);
+        Assert.Equal("jf", configured.Database);
+    }
+
+    [Fact]
+    public void Initialise_WithoutDatabaseOrUsername_ThrowsAskingForTheDatabase()
+    {
+        var provider = CreateProvider();
+        var configuration = CreateConfiguration("Host=db.example");
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => provider.Initialise(new DbContextOptionsBuilder(), configuration));
+
+        Assert.Contains("Database", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

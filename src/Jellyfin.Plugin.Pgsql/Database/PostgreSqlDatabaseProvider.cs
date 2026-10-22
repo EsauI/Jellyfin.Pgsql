@@ -72,8 +72,16 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
             throw new InvalidOperationException("The configured value is not a valid PostgreSQL connection string. " + ConnectionStringHint, ex);
         }
 
+        // PostgreSQL connects to the database named after the user when none is given; backups need the name explicitly.
+        if (string.IsNullOrWhiteSpace(connection.Database))
+        {
+            connection.Database = string.IsNullOrWhiteSpace(connection.Username)
+                ? throw new InvalidOperationException("The PostgreSQL connection string must set Database. " + ConnectionStringHint)
+                : connection.Username;
+        }
+
         // PostgreSQL silently truncates longer names, which breaks the rename-based restore.
-        if (connection.Database is not null && Encoding.UTF8.GetByteCount(connection.Database) > DatabaseNames.MaxIdentifierBytes)
+        if (Encoding.UTF8.GetByteCount(connection.Database) > DatabaseNames.MaxIdentifierBytes)
         {
             throw new InvalidOperationException(
                 $"The PostgreSQL database name must be at most {DatabaseNames.MaxIdentifierBytes} bytes. " + ConnectionStringHint);
