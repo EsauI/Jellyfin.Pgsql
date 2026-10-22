@@ -39,9 +39,10 @@ internal sealed class CaseInsensitiveLikeTranslator : IMethodCallTranslator
         }
 
         // Arguments are (DbFunctions, matchExpression, pattern[, escapeCharacter]).
+        // Without an escape character, ESCAPE '' keeps '\' literal as in SQLite (PostgreSQL defaults to '\').
         return arguments.Count switch
         {
-            3 => _sqlExpressionFactory.ILike(arguments[1], arguments[2]),
+            3 => _sqlExpressionFactory.ILike(arguments[1], arguments[2], _sqlExpressionFactory.Constant(string.Empty)),
             4 => _sqlExpressionFactory.ILike(arguments[1], arguments[2], arguments[3]),
             _ => null,
         };

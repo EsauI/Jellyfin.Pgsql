@@ -36,6 +36,27 @@ public class LikeTranslationTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
+    public async Task Like_WithoutAnEscapeCharacter_TreatsBackslashLiterallyLikeSqlite()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var database = await fixture.CreateDatabaseAsync();
+        await using (var seed = database.CreateContext())
+        {
+            seed.BaseItems.Add(new BaseItemEntity { Id = Guid.NewGuid(), Type = "MusicAlbum", Name = @"AC\DC Live", CleanName = @"ac\dc live", OriginalTitle = @"AC\DC Live" });
+            await seed.SaveChangesAsync(token);
+        }
+
+        // Jellyfin builds the pattern from user input, so it reaches PostgreSQL as a parameter.
+        var pattern = @"%ac\dc%";
+        await using var context = database.CreateContext();
+        var matches = await context.BaseItems.CountAsync(item => EF.Functions.Like(item.OriginalTitle!, pattern), token);
+        var sql = context.BaseItems.Where(item => EF.Functions.Like(item.OriginalTitle!, pattern)).ToQueryString();
+
+        Assert.Equal(1, matches);
+        Assert.Contains("ESCAPE ''", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Like_OnTheActivityLogName_MatchesRegardlessOfCase()
     {
         var token = TestContext.Current.CancellationToken;
