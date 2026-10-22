@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 
 namespace Jellyfin.Plugin.Pgsql.Tests.Database;
 
@@ -22,7 +23,11 @@ public sealed class TestDatabase
     public TestDatabase(string connectionString)
     {
         ConnectionString = connectionString;
-        Provider = new PostgreSqlDatabaseProvider(NullLogger<PostgreSqlDatabaseProvider>.Instance);
+
+        // Short retries keep the test that holds a foreign session on the database quick.
+        Provider = new PostgreSqlDatabaseProvider(
+            NullLogger<PostgreSqlDatabaseProvider>.Instance,
+            new PostgreSqlBackupService(NullLogger.Instance, cloneAttempts: 3, cloneRetryDelay: TimeSpan.FromMilliseconds(100)));
         var builder = new DbContextOptionsBuilder<JellyfinDbContext>();
         _configuration = new DatabaseConfigurationOptions
         {
@@ -40,6 +45,8 @@ public sealed class TestDatabase
     }
 
     public string ConnectionString { get; }
+
+    public string DatabaseName => new NpgsqlConnectionStringBuilder(ConnectionString).Database!;
 
     public PostgreSqlDatabaseProvider Provider { get; }
 
