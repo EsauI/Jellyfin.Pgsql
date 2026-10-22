@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
@@ -26,15 +27,23 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
 
     private readonly ILogger<PostgreSqlDatabaseProvider> _logger;
     private readonly RestoreCompletionInterceptor _restoreCompletion;
+    private readonly PostgreSqlBackupService _backups;
+    private NpgsqlConnectionStringBuilder? _connection;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PostgreSqlDatabaseProvider"/> class.
     /// </summary>
     /// <param name="logger">The logger.</param>
     public PostgreSqlDatabaseProvider(ILogger<PostgreSqlDatabaseProvider> logger)
+        : this(logger, new PostgreSqlBackupService(logger))
+    {
+    }
+
+    internal PostgreSqlDatabaseProvider(ILogger<PostgreSqlDatabaseProvider> logger, PostgreSqlBackupService backups)
     {
         _logger = logger;
         _restoreCompletion = new RestoreCompletionInterceptor(logger);
+        _backups = backups;
     }
 
     /// <inheritdoc/>
@@ -63,6 +72,14 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
             throw new InvalidOperationException("The configured value is not a valid PostgreSQL connection string. " + ConnectionStringHint, ex);
         }
 
+        // PostgreSQL silently truncates longer names, which breaks the rename-based restore.
+        if (connection.Database is not null && Encoding.UTF8.GetByteCount(connection.Database) > DatabaseNames.MaxIdentifierBytes)
+        {
+            throw new InvalidOperationException(
+                $"The PostgreSQL database name must be at most {DatabaseNames.MaxIdentifierBytes} bytes. " + ConnectionStringHint);
+        }
+
+        _connection = connection;
         options.UseNpgsql(
             connection.ConnectionString,
             npgsql => npgsql.MigrationsAssembly(typeof(PostgreSqlDatabaseProvider).Assembly.GetName().Name));
@@ -122,17 +139,39 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
         return Task.CompletedTask;
     }
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Backs the database up inside the server by cloning it with <c>CREATE DATABASE … TEMPLATE</c> into
+    /// <c>&lt;db&gt;_backup_&lt;key&gt;</c>. No file is written and no PostgreSQL client tool is needed.
+    /// The PostgreSQL role needs the <c>CREATEDB</c> privilege and must own the database (or be a superuser), and no other
+    /// client may be connected to the database: close tools such as pgAdmin first. Other sessions are never ended.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the backup.</param>
+    /// <returns>
+    /// The key for <see cref="RestoreBackupFast"/> and <see cref="DeleteBackup"/>. A database that does not exist yet
+    /// or has no tables (a fresh install) has nothing to back up and yields a key both methods accept as a no-op.
+    /// </returns>
     public Task<string> MigrationBackupFast(CancellationToken cancellationToken)
-        => throw new NotSupportedException("Backups are not supported by this provider version.");
+        => _backups.BackupAsync(RequireConnection(), cancellationToken);
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Restores a backup atomically: the backup database is cloned into a new database (the backup stays) which then takes
+    /// over the configured name, while the previous database is kept as <c>&lt;db&gt;_failed_&lt;stamp&gt;</c>. Nothing is dropped.
+    /// The PostgreSQL role needs the <c>CREATEDB</c> privilege, must own the database (or be a superuser) and must be able to
+    /// end other sessions on it.
+    /// </summary>
+    /// <param name="key">A key returned by <see cref="MigrationBackupFast"/>.</param>
+    /// <param name="cancellationToken">Cancels the restore before the swap begins.</param>
+    /// <returns>A task that completes when the restored database serves the configured name.</returns>
     public Task RestoreBackupFast(string key, CancellationToken cancellationToken)
-        => throw new NotSupportedException("Backups are not supported by this provider version.");
+        => _backups.RestoreAsync(RequireConnection(), key, cancellationToken);
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Drops the backup database of a key; unknown keys and the no-backup key of a fresh install are ignored.
+    /// </summary>
+    /// <param name="key">A key returned by <see cref="MigrationBackupFast"/>.</param>
+    /// <returns>A task that completes when the backup database is gone.</returns>
     public Task DeleteBackup(string key)
-        => throw new NotSupportedException("Backups are not supported by this provider version.");
+        => _backups.DeleteAsync(RequireConnection(), key, CancellationToken.None);
 
     /// <inheritdoc/>
     public async Task PurgeDatabase(JellyfinDbContext dbContext, IEnumerable<string>? tableNames)
@@ -212,6 +251,9 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
             throw;
         }
     }
+
+    private NpgsqlConnectionStringBuilder RequireConnection()
+        => _connection ?? throw new InvalidOperationException("The provider has not been initialised by the server; no connection string is known.");
 
     private async Task<JellyfinDbContext> CreateContextAsync(CancellationToken cancellationToken)
     {

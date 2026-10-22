@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.DbConfiguration;
@@ -58,6 +59,18 @@ public class PostgreSqlDatabaseProviderTests
     }
 
     [Fact]
+    public void Initialise_DatabaseNameLongerThan63Bytes_Throws()
+    {
+        var provider = CreateProvider();
+        var configuration = CreateConfiguration("Host=localhost;Database=" + new string('x', 64));
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => provider.Initialise(new DbContextOptionsBuilder(), configuration));
+
+        Assert.Contains("63 bytes", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Initialise_ValidConnectionString_ConfiguresNpgsqlWithPluginMigrationsAssembly()
     {
         var provider = CreateProvider();
@@ -91,13 +104,13 @@ public class PostgreSqlDatabaseProviderTests
     }
 
     [Fact]
-    public async Task BackupOperations_AreNotSupportedYet()
+    public async Task BackupOperations_BeforeInitialise_FailWithActionableError()
     {
         var provider = CreateProvider();
 
-        await Assert.ThrowsAsync<NotSupportedException>(() => provider.MigrationBackupFast(TestContext.Current.CancellationToken));
-        await Assert.ThrowsAsync<NotSupportedException>(() => provider.RestoreBackupFast("key", TestContext.Current.CancellationToken));
-        await Assert.ThrowsAsync<NotSupportedException>(() => provider.DeleteBackup("key"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => provider.MigrationBackupFast(TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => provider.RestoreBackupFast("20260101000000", TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => provider.DeleteBackup("20260101000000"));
     }
 
     private static PostgreSqlDatabaseProvider CreateProvider() => new(NullLogger<PostgreSqlDatabaseProvider>.Instance);
