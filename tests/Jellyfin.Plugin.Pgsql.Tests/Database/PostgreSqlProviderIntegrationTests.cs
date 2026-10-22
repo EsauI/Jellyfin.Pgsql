@@ -87,11 +87,7 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
         await using (var purge = database.CreateContext())
         {
             // Same names Jellyfin's BackupService passes before a restore.
-            var tableNames = purge.Model.GetEntityTypes()
-                .Select(entity => entity.GetSchemaQualifiedTableName())
-                .OfType<string>()
-                .Distinct()
-                .ToList();
+            var tableNames = BackupServiceRestore.TableNames(purge);
             await database.Provider.PurgeDatabase(purge, tableNames);
         }
 
@@ -106,7 +102,7 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
         var database = await fixture.CreateDatabaseAsync();
         var backup = await SeedActivityLogsAsync(database, 3, token);
 
-        await RestoreLikeBackupServiceAsync(database, backup, token);
+        await BackupServiceRestore.RestoreAsync(database, backup, token);
 
         await AssertNextInsertSucceedsAsync(database, expectedCount: 4, token);
     }
@@ -119,7 +115,7 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
         var backup = await SeedActivityLogsAsync(source, 3, token);
         var target = await fixture.CreateDatabaseAsync();
 
-        await RestoreLikeBackupServiceAsync(target, backup, token);
+        await BackupServiceRestore.RestoreAsync(target, backup, token);
 
         await AssertNextInsertSucceedsAsync(target, expectedCount: 4, token);
     }
@@ -181,24 +177,6 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
 
         await seed.SaveChangesAsync(token);
         return await seed.ActivityLogs.AsNoTracking().ToArrayAsync(token);
-    }
-
-    // Mirrors Jellyfin 12.2 BackupService.RestoreBackupAsync: purge with schema-qualified names, add rows with ids, save once.
-    private static async Task RestoreLikeBackupServiceAsync(TestDatabase database, ActivityLog[] backup, CancellationToken token)
-    {
-        await using var restore = database.CreateContext();
-        var tableNames = restore.Model.GetEntityTypes()
-            .Select(entity => entity.GetSchemaQualifiedTableName())
-            .OfType<string>()
-            .Distinct()
-            .ToList();
-        await database.Provider.PurgeDatabase(restore, tableNames);
-        foreach (var row in backup)
-        {
-            restore.Add(row);
-        }
-
-        await restore.SaveChangesAsync(token);
     }
 
     private static async Task AssertNextInsertSucceedsAsync(TestDatabase database, int expectedCount, CancellationToken token)

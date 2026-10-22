@@ -24,7 +24,7 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
         + "The password may be supplied through the standard PGPASSWORD environment variable or a .pgpass file.";
 
     private readonly ILogger<PostgreSqlDatabaseProvider> _logger;
-    private readonly IdentitySequenceResynchronizer _sequenceResynchronizer = new();
+    private readonly RestoreCompletionInterceptor _restoreCompletion;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PostgreSqlDatabaseProvider"/> class.
@@ -33,6 +33,7 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
     public PostgreSqlDatabaseProvider(ILogger<PostgreSqlDatabaseProvider> logger)
     {
         _logger = logger;
+        _restoreCompletion = new RestoreCompletionInterceptor(logger);
     }
 
     /// <inheritdoc/>
@@ -64,7 +65,7 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
         options.UseNpgsql(
             connection.ConnectionString,
             npgsql => npgsql.MigrationsAssembly(typeof(PostgreSqlDatabaseProvider).Assembly.GetName().Name));
-        options.AddInterceptors(_sequenceResynchronizer);
+        options.AddInterceptors(_restoreCompletion);
 
         LogConnecting(connection.Host, connection.Port, connection.Database);
     }
@@ -146,10 +147,10 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
             .Distinct()
             .ToList();
 
-        var selected = new List<(string? Schema, string Name)>();
+        var selected = new List<TableRef>();
         if (tableNames is null)
         {
-            selected.AddRange(modelTables.Select(table => (table.Schema, table.Name!)));
+            selected.AddRange(modelTables.Select(table => new TableRef(table.Schema, table.Name!)));
         }
         else
         {
@@ -164,7 +165,7 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
                     throw new ArgumentException($"'{name}' is not a table of the Jellyfin database model.", nameof(tableNames));
                 }
 
-                selected.Add((match.Schema, match.Name));
+                selected.Add(new TableRef(match.Schema, match.Name));
             }
         }
 
@@ -173,23 +174,27 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
             return;
         }
 
-        var targets = string.Join(", ", selected.Select(table => QuoteQualifiedName(table.Schema, table.Name)));
+        // CASCADE also empties tables that reference the purged ones. SQLite keeps rows of tables the caller did not
+        // list, so those are copied first and put back after the restore has been saved.
+        var cascaded = CascadeResolver.FindCascaded(dbContext.Model, selected.Distinct().ToList());
+        var snapshots = new List<TableSnapshot>();
+        foreach (var table in cascaded)
+        {
+            snapshots.Add(await TableSnapshotter.CaptureAsync(dbContext, table, CancellationToken.None).ConfigureAwait(false));
+        }
+
+        var targets = string.Join(", ", selected.Select(table => table.Quoted));
 
         // Identifiers come from the EF model, are validated above and quoted, so the statement is not injectable.
 #pragma warning disable EF1002, CA2100
         await dbContext.Database.ExecuteSqlRawAsync($"TRUNCATE TABLE {targets} RESTART IDENTITY CASCADE").ConfigureAwait(false);
 #pragma warning restore EF1002, CA2100
 
-        // A restore follows with rows that keep their original ids; resync the sequences after that save.
-        _sequenceResynchronizer.MarkPending();
-        LogPurged(selected.Count);
+        // A restore follows with rows that keep their original ids: after the next save of this context, put back
+        // the rows the cascade emptied and resync the sequences.
+        _restoreCompletion.MarkPending(dbContext, snapshots);
+        LogPurged(selected.Count, snapshots.Count);
     }
-
-    private static string QuoteQualifiedName(string? schema, string name)
-        => schema is null ? QuoteIdentifier(name) : QuoteIdentifier(schema) + "." + QuoteIdentifier(name);
-
-    private static string QuoteIdentifier(string identifier)
-        => string.Create(CultureInfo.InvariantCulture, $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"");
 
     private async Task<JellyfinDbContext> CreateContextAsync(CancellationToken cancellationToken)
     {
@@ -213,6 +218,6 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
     [LoggerMessage(Level = LogLevel.Information, Message = "PostgreSQL connection pools cleared")]
     private partial void LogPoolsCleared();
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Purged {Count} PostgreSQL table(s)")]
-    private partial void LogPurged(int count);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Purged {Count} PostgreSQL table(s); kept the rows of {Kept} table(s) that the purge cascaded to")]
+    private partial void LogPurged(int count, int kept);
 }
