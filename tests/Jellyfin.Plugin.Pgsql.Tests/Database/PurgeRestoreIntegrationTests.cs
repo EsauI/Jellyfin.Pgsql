@@ -24,7 +24,7 @@ public class PurgeRestoreIntegrationTests(PostgreSqlFixture fixture)
     {
         var token = TestContext.Current.CancellationToken;
         var database = await fixture.CreateDatabaseAsync();
-        var (backup, before) = await SeedAsync(database, token);
+        var (backup, before) = await RestoreScenario.SeedAsync(database, token);
 
         await BackupServiceRestore.RestoreAsync(database, backup, token);
 
@@ -45,7 +45,7 @@ public class PurgeRestoreIntegrationTests(PostgreSqlFixture fixture)
     {
         var token = TestContext.Current.CancellationToken;
         var database = await fixture.CreateDatabaseAsync();
-        var (backup, _) = await SeedAsync(database, token);
+        var (backup, _) = await RestoreScenario.SeedAsync(database, token);
 
         // The archive holds the users but no display preferences: the home sections are orphans.
         await BackupServiceRestore.RestoreAsync(database, backup.OfType<User>(), token);
@@ -60,11 +60,11 @@ public class PurgeRestoreIntegrationTests(PostgreSqlFixture fixture)
     {
         var token = TestContext.Current.CancellationToken;
         var database = await fixture.CreateDatabaseAsync();
-        var (backup, before) = await SeedAsync(database, token);
+        var (backup, before) = await RestoreScenario.SeedAsync(database, token);
 
         await BackupServiceRestore.RestoreAsync(database, backup, token);
 
-        await AssertNextHomeSectionGetsFreshIdAsync(database, before.Max(section => section.Id), token);
+        await RestoreScenario.AssertNextHomeSectionGetsFreshIdAsync(database, before.Max(section => section.Id), token);
     }
 
     [Fact]
@@ -72,7 +72,7 @@ public class PurgeRestoreIntegrationTests(PostgreSqlFixture fixture)
     {
         var token = TestContext.Current.CancellationToken;
         var database = await fixture.CreateDatabaseAsync();
-        var (backup, before) = await SeedAsync(database, token);
+        var (backup, before) = await RestoreScenario.SeedAsync(database, token);
 
         await BackupServiceRestore.RestoreAsync(
             database,
@@ -80,8 +80,9 @@ public class PurgeRestoreIntegrationTests(PostgreSqlFixture fixture)
             token,
             async _ =>
             {
+                // The purge holds its table locks until the restore has been saved, so the other context saves
+                // nothing to the database; its save still raises the interceptor events.
                 await using var other = database.CreateContext();
-                other.ActivityLogs.Add(new ActivityLog("unrelated", "test", Guid.NewGuid()));
                 await other.SaveChangesAsync(token);
             });
 
@@ -90,35 +91,7 @@ public class PurgeRestoreIntegrationTests(PostgreSqlFixture fixture)
             Assert.Equal(before.Count, await verify.Set<HomeSection>().CountAsync(token));
         }
 
-        await AssertNextHomeSectionGetsFreshIdAsync(database, before.Max(section => section.Id), token);
-    }
-
-    [Fact]
-    public async Task Restore_WhenReinsertFails_RaisesAndPerformsItOnTheNextSave()
-    {
-        var token = TestContext.Current.CancellationToken;
-        var database = await fixture.CreateDatabaseAsync();
-        var (backup, before) = await SeedAsync(database, token);
-
-        await using var restore = database.CreateContext();
-        await database.Provider.PurgeDatabase(restore, BackupServiceRestore.TableNames(restore));
-        foreach (var row in backup)
-        {
-            restore.Add(row);
-        }
-
-        // Make the follow-up statements fail once: the table the snapshot belongs to is temporarily gone.
-        await restore.Database.ExecuteSqlRawAsync("ALTER TABLE \"HomeSection\" RENAME TO \"HomeSection_away\"", token);
-        await Assert.ThrowsAsync<PostgresException>(() => restore.SaveChangesAsync(token));
-        await restore.Database.ExecuteSqlRawAsync("ALTER TABLE \"HomeSection_away\" RENAME TO \"HomeSection\"", token);
-
-        // The restore itself was committed; the retained state is applied by the next save of the same context.
-        restore.ActivityLogs.Add(new ActivityLog("retry", "test", Guid.NewGuid()));
-        await restore.SaveChangesAsync(token);
-
-        await using var verify = database.CreateContext();
-        Assert.Equal(before.Count, await verify.Set<HomeSection>().CountAsync(token));
-        await AssertNextHomeSectionGetsFreshIdAsync(database, before.Max(section => section.Id), token);
+        await RestoreScenario.AssertNextHomeSectionGetsFreshIdAsync(database, before.Max(section => section.Id), token);
     }
 
     [Fact]
@@ -126,7 +99,7 @@ public class PurgeRestoreIntegrationTests(PostgreSqlFixture fixture)
     {
         var token = TestContext.Current.CancellationToken;
         var database = await fixture.CreateDatabaseAsync();
-        await SeedAsync(database, token);
+        await RestoreScenario.SeedAsync(database, token);
 
         await using (var purge = database.CreateContext())
         {
@@ -137,40 +110,5 @@ public class PurgeRestoreIntegrationTests(PostgreSqlFixture fixture)
         await using var verify = database.CreateContext();
         Assert.Empty(await verify.Users.ToListAsync(token));
         Assert.Empty(await verify.Set<HomeSection>().ToListAsync(token));
-    }
-
-    private static async Task<(List<object> Backup, List<HomeSection> HomeSections)> SeedAsync(TestDatabase database, CancellationToken token)
-    {
-        await using var seed = database.CreateContext();
-        var user = new User("user", "auth", "reset");
-        seed.Users.Add(user);
-        await seed.SaveChangesAsync(token);
-
-        var web = new DisplayPreferences(user.Id, Guid.NewGuid(), "web");
-        web.HomeSections.Add(new HomeSection { Order = 0, Type = HomeSectionType.SmallLibraryTiles });
-        web.HomeSections.Add(new HomeSection { Order = 1, Type = HomeSectionType.LatestMedia });
-        var tv = new DisplayPreferences(user.Id, Guid.NewGuid(), "tv");
-        tv.HomeSections.Add(new HomeSection { Order = 0, Type = HomeSectionType.Resume });
-        seed.DisplayPreferences.AddRange(web, tv);
-        await seed.SaveChangesAsync(token);
-
-        // The archive holds the DbSet tables only, as untracked entities with their ids.
-        var backup = new List<object>();
-        backup.AddRange(await seed.Users.AsNoTracking().ToListAsync(token));
-        backup.AddRange(await seed.DisplayPreferences.AsNoTracking().ToListAsync(token));
-        var homeSections = await seed.Set<HomeSection>().AsNoTracking().OrderBy(section => section.Id).ToListAsync(token);
-        return (backup, homeSections);
-    }
-
-    private static async Task AssertNextHomeSectionGetsFreshIdAsync(TestDatabase database, int highestId, CancellationToken token)
-    {
-        await using var next = database.CreateContext();
-        var user = await next.Users.AsNoTracking().SingleAsync(token);
-        var preferences = new DisplayPreferences(user.Id, Guid.NewGuid(), "next");
-        var section = new HomeSection { Order = 0, Type = HomeSectionType.None };
-        preferences.HomeSections.Add(section);
-        next.DisplayPreferences.Add(preferences);
-        await next.SaveChangesAsync(token);
-        Assert.True(section.Id > highestId, $"expected an id above {highestId} but got {section.Id}");
     }
 }

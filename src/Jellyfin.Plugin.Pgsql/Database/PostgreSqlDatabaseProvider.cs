@@ -174,26 +174,45 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
             return;
         }
 
-        // CASCADE also empties tables that reference the purged ones. SQLite keeps rows of tables the caller did not
-        // list, so those are copied first and put back after the restore has been saved.
-        var cascaded = CascadeResolver.FindCascaded(dbContext.Model, selected.Distinct().ToList());
-        var snapshots = new List<TableSnapshot>();
-        foreach (var table in cascaded)
+        // Purge, restore save and follow-up form one transaction: a failure anywhere leaves the original data intact.
+        var pending = await _restoreCompletion.BeginAsync(dbContext, CancellationToken.None).ConfigureAwait(false);
+        try
         {
-            snapshots.Add(await TableSnapshotter.CaptureAsync(dbContext, table, CancellationToken.None).ConfigureAwait(false));
-        }
+            // CASCADE also empties tables that reference the purged ones. SQLite keeps rows of tables the caller did
+            // not list, so those are copied first and put back after the restore has been saved.
+            var cascaded = CascadeResolver.FindCascaded(dbContext.Model, selected.Distinct().ToList());
+            var snapshots = new List<TableSnapshot>();
+            foreach (var table in cascaded)
+            {
+                snapshots.Add(await TableSnapshotter.CaptureAsync(dbContext, table, CancellationToken.None).ConfigureAwait(false));
+            }
 
-        var targets = string.Join(", ", selected.Select(table => table.Quoted));
+            var targets = string.Join(", ", selected.Select(table => table.Quoted));
 
-        // Identifiers come from the EF model, are validated above and quoted, so the statement is not injectable.
+            // Identifiers come from the EF model, are validated above and quoted, so the statement is not injectable.
 #pragma warning disable EF1002, CA2100
-        await dbContext.Database.ExecuteSqlRawAsync($"TRUNCATE TABLE {targets} RESTART IDENTITY CASCADE").ConfigureAwait(false);
+            await dbContext.Database.ExecuteSqlRawAsync($"TRUNCATE TABLE {targets} RESTART IDENTITY CASCADE").ConfigureAwait(false);
 #pragma warning restore EF1002, CA2100
 
-        // A restore follows with rows that keep their original ids: after the next save of this context, put back
-        // the rows the cascade emptied and resync the sequences.
-        _restoreCompletion.MarkPending(dbContext, snapshots);
-        LogPurged(selected.Count, snapshots.Count);
+            // Tables this purge empties on purpose are no longer held back, whatever an earlier purge kept of them.
+            foreach (var table in selected)
+            {
+                pending.Snapshots.Remove(table);
+            }
+
+            // A table already emptied by an earlier purge of this context keeps the snapshot taken then.
+            foreach (var snapshot in snapshots)
+            {
+                pending.Snapshots.TryAdd(snapshot.Table, snapshot);
+            }
+
+            LogPurged(selected.Count, snapshots.Count);
+        }
+        catch
+        {
+            await _restoreCompletion.AbortAsync(dbContext).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async Task<JellyfinDbContext> CreateContextAsync(CancellationToken cancellationToken)

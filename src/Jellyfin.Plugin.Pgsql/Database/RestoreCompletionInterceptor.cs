@@ -1,4 +1,5 @@
 using System;
+using System.Data.Common;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,8 +18,9 @@ namespace Jellyfin.Plugin.Pgsql.Database;
 /// single save. PostgreSQL does not advance a sequence for explicit ids, so without the second step the next
 /// insert would reuse an id that already exists. <c>TRUNCATE ... CASCADE</c> also empties tables that the
 /// caller did not list (Jellyfin's table list has no entry for <c>HomeSection</c>); SQLite keeps those rows, so
-/// they are held in memory and inserted again. The state belongs to the purging context only, and is kept
-/// until the follow-up has succeeded.
+/// they are held in memory and inserted again. The state belongs to the purging context only. The purge, the
+/// restore save and the follow-up run in one transaction, committed only when all of them succeeded: the server
+/// never saves the context again after a restore, so a partial result could not be repaired later.
 /// </remarks>
 internal sealed partial class RestoreCompletionInterceptor(ILogger logger) : SaveChangesInterceptor
 {
@@ -48,20 +50,60 @@ internal sealed partial class RestoreCompletionInterceptor(ILogger logger) : Sav
     private readonly ConditionalWeakTable<DbContext, PendingRestore> _pending = new();
 
     /// <summary>
-    /// Requests the follow-up after the next successful save of <paramref name="context"/>.
+    /// Makes the purge about to run part of a transaction that also covers the next save of
+    /// <paramref name="context"/>: the transaction the caller opened, or one begun here.
     /// </summary>
     /// <param name="context">The purging context.</param>
-    /// <param name="snapshots">Rows the purge emptied without being asked to.</param>
-    public void MarkPending(DbContext context, System.Collections.Generic.IEnumerable<TableSnapshot> snapshots)
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The state of the pending restore.</returns>
+    public async Task<PendingRestore> BeginAsync(DbContext context, CancellationToken cancellationToken)
     {
-        var pending = _pending.GetValue(context, static _ => new PendingRestore());
-        lock (pending)
+        var current = context.Database.CurrentTransaction;
+        if (_pending.TryGetValue(context, out var existing))
         {
-            foreach (var snapshot in snapshots)
+            if (current is not null && ReferenceEquals(existing.Transaction, current))
             {
-                // A later purge sees the tables already emptied; the first snapshot holds the real rows.
-                pending.Snapshots.TryAdd(snapshot.Table, snapshot);
+                return existing;
             }
+
+            // Left over from an earlier use of a pooled context: its transaction is gone.
+            _pending.Remove(context);
+        }
+
+        var owns = current is null;
+        var transaction = current ?? await context.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var pending = new PendingRestore(transaction, owns);
+        _pending.Add(context, pending);
+        return pending;
+    }
+
+    /// <summary>
+    /// Gives up a pending restore: rolls back the transaction when the provider began it, and forgets the state.
+    /// </summary>
+    /// <param name="context">The purging context.</param>
+    /// <returns>A task that completes when the state is gone.</returns>
+    public async Task AbortAsync(DbContext context)
+    {
+        if (!_pending.TryGetValue(context, out var pending))
+        {
+            return;
+        }
+
+        _pending.Remove(context);
+        if (!pending.OwnsTransaction || !ReferenceEquals(context.Database.CurrentTransaction, pending.Transaction))
+        {
+            return;
+        }
+
+        try
+        {
+            await pending.Transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            await pending.Transaction.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is DbException or InvalidOperationException)
+        {
+            // The original failure is what matters; a transaction that cannot be rolled back dies with its connection.
+            LogRollbackFailed(ex);
         }
     }
 
@@ -90,6 +132,30 @@ internal sealed partial class RestoreCompletionInterceptor(ILogger logger) : Sav
         return await base.SavedChangesAsync(eventData, result, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <inheritdoc/>
+    public override void SaveChangesFailed(DbContextErrorEventData eventData)
+    {
+        ArgumentNullException.ThrowIfNull(eventData);
+        if (eventData.Context is { } context)
+        {
+            AbortAsync(context).GetAwaiter().GetResult();
+        }
+
+        base.SaveChangesFailed(eventData);
+    }
+
+    /// <inheritdoc/>
+    public override async Task SaveChangesFailedAsync(DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(eventData);
+        if (eventData.Context is { } context)
+        {
+            await AbortAsync(context).ConfigureAwait(false);
+        }
+
+        await base.SaveChangesFailedAsync(eventData, cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task<int> ApplyAsync(DbContext context, PendingRestore pending, CancellationToken cancellationToken)
     {
         var skipped = pending.Snapshots.Count > 0
@@ -104,24 +170,35 @@ internal sealed partial class RestoreCompletionInterceptor(ILogger logger) : Sav
 
     private async Task CompleteAsync(DbContext context, PendingRestore pending, CancellationToken cancellationToken)
     {
-        int skipped;
-        if (context.Database.CurrentTransaction is not null)
+        if (!ReferenceEquals(context.Database.CurrentTransaction, pending.Transaction))
         {
-            skipped = await ApplyAsync(context, pending, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            // One transaction, so a failure leaves nothing half-restored and the whole follow-up can run again.
-            var transaction = await context.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-            await using (transaction.ConfigureAwait(false))
-            {
-                skipped = await ApplyAsync(context, pending, cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            }
+            // The purge's transaction ended without a save (a pooled context was reset): there is nothing to complete.
+            _pending.Remove(context);
+            return;
         }
 
-        // Only now is the work done; if anything above threw, the state stays and the next save retries it.
+        int skipped;
+        try
+        {
+            skipped = await ApplyAsync(context, pending, cancellationToken).ConfigureAwait(false);
+            if (pending.OwnsTransaction)
+            {
+                await pending.Transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            // Purge, restore save and follow-up are one unit: undo them all and let the failure surface.
+            await AbortAsync(context).ConfigureAwait(false);
+            throw;
+        }
+
         _pending.Remove(context);
+        if (pending.OwnsTransaction)
+        {
+            await pending.Transaction.DisposeAsync().ConfigureAwait(false);
+        }
+
         if (pending.Snapshots.Count > 0)
         {
             LogRestored(pending.Snapshots.Count, skipped);
@@ -130,4 +207,7 @@ internal sealed partial class RestoreCompletionInterceptor(ILogger logger) : Sav
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Restored rows of {Tables} table(s) that the purge emptied but the restore did not list; skipped {Orphans} row(s) whose parent row no longer exists")]
     private partial void LogRestored(int tables, int orphans);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The restore transaction could not be rolled back; it ends with its connection")]
+    private partial void LogRollbackFailed(Exception exception);
 }

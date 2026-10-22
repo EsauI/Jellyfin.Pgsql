@@ -44,6 +44,7 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
         await using (var purge = database.CreateContext())
         {
             await database.Provider.PurgeDatabase(purge, ["ActivityLogs"]);
+            await purge.SaveChangesAsync(token);
         }
 
         await using var verify = database.CreateContext();
@@ -67,6 +68,7 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
         await using (var purge = database.CreateContext())
         {
             await database.Provider.PurgeDatabase(purge, null);
+            await purge.SaveChangesAsync(token);
         }
 
         await using var verify = database.CreateContext();
@@ -89,6 +91,7 @@ public class PostgreSqlProviderIntegrationTests(PostgreSqlFixture fixture)
             // Same names Jellyfin's BackupService passes before a restore.
             var tableNames = BackupServiceRestore.TableNames(purge);
             await database.Provider.PurgeDatabase(purge, tableNames);
+            await purge.SaveChangesAsync(token);
         }
 
         await using var verify = database.CreateContext();
