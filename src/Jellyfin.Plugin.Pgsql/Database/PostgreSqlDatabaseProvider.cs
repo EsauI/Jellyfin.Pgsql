@@ -73,12 +73,8 @@ public sealed partial class PostgreSqlDatabaseProvider : IJellyfinDatabaseProvid
         }
 
         // PostgreSQL connects to the database named after the user when none is given; backups need the name explicitly.
-        if (string.IsNullOrWhiteSpace(connection.Database))
-        {
-            connection.Database = string.IsNullOrWhiteSpace(connection.Username)
-                ? throw new InvalidOperationException("The PostgreSQL connection string must set Database. " + ConnectionStringHint)
-                : connection.Username;
-        }
+        connection.Database = DatabaseNames.Resolve(connection.Database, connection.Username)
+            ?? throw new InvalidOperationException("The PostgreSQL connection string must set Database. " + ConnectionStringHint);
 
         // PostgreSQL silently truncates longer names, which breaks the rename-based restore.
         if (Encoding.UTF8.GetByteCount(connection.Database) > DatabaseNames.MaxIdentifierBytes)

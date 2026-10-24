@@ -9,8 +9,28 @@
     <PackageReference Include="Jellyfin.Controller" PrivateAssets="all" Publish="false" />
     <PackageReference Include="Jellyfin.Model" PrivateAssets="all" Publish="false" />
     <PackageReference Include="Jellyfin.Database.Implementations" PrivateAssets="all" Publish="false" />
+    <PackageReference Include="Microsoft.Data.Sqlite" PrivateAssets="all" Publish="false" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!--
+    Jellyfin loads this plugin into its own load context next to its own copy of EF Core. Shipping a second
+    copy makes the plugin's types (JellyfinDbContext constraints, IDesignTimeDbContextFactory) resolve against
+    different assemblies and fail with TypeLoadException. Compile against EF Core but never publish it.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Publish="false" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Abstractions" Publish="false" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Publish="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Configuration\configPage.html" Condition="Exists('Configuration\configPage.html')" />
   </ItemGroup>
 
   <ItemGroup>
