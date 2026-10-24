@@ -71,6 +71,24 @@ public class ConnectionSettingsMapperTests
         Assert.Equal("fresh", built.Password);
     }
 
+    [Fact]
+    public void Build_UsesThePasswordKeptByTheStoreOverAStoredPassfileReference()
+    {
+        var built = new NpgsqlConnectionStringBuilder(ConnectionSettingsMapper.Build(
+            new ConnectionSettings { Host = "h", Username = "jf" },
+            "Host=old;Username=jf;Passfile=/config/pgsql.pgpass",
+            "from-the-passfile"));
+
+        Assert.Equal("from-the-passfile", built.Password);
+        Assert.True(string.IsNullOrEmpty(built.Passfile));
+    }
+
+    [Fact]
+    public void Validate_RejectsAPasswordWithLineBreaks_BecauseTheyWouldCorruptThePassfile()
+    {
+        Assert.NotNull(ConnectionSettingsMapper.Validate(new ConnectionSettings { Host = "db", Username = "jf", Password = "a\nb" }));
+    }
+
     [Theory]
     [InlineData(null, "jf", 5432)]
     [InlineData("db", null, 5432)]

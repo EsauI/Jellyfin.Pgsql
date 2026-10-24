@@ -26,7 +26,7 @@
                     </div>
                     <div class="inputContainer">
                         <input is="emby-input" type="password" id="pgsqlPassword" label="Password" autocomplete="new-password" />
-                        <div class="fieldDescription">The password is stored in database.xml only and is never shown again.</div>
+                        <div class="fieldDescription">The password is kept in a private file next to the server configuration (readable only by the Jellyfin user), never in database.xml, and is never shown again. Leave empty to keep the stored one.</div>
                     </div>
                     <div id="pgsqlTestResult" style="margin: 1em 0;"></div>
                     <div>

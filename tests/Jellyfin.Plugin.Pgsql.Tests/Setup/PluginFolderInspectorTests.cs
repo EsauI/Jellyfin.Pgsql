@@ -25,6 +25,16 @@ public sealed class PluginFolderInspectorTests : IDisposable
     }
 
     [Fact]
+    public void FindProviderFolders_MirrorsJellyfinsCaseInsensitiveMatchAndDefaultOrder()
+    {
+        // Jellyfin: StartsWith(name, OrdinalIgnoreCase) then .Order() with the default (culture) comparer.
+        Directory.CreateDirectory(Path.Combine(_plugins, "PostgreSQL_1.2.0.0"));
+        Directory.CreateDirectory(Path.Combine(_plugins, "postgresql_1.1.0.0"));
+
+        Assert.Equal(["postgresql_1.1.0.0", "PostgreSQL_1.2.0.0"], Inspector().FindProviderFolders());
+    }
+
+    [Fact]
     public void FindProviderFolders_ReturnsNothingWhenThePluginsPathIsMissing()
     {
         Assert.Empty(new PluginFolderInspector(Paths(Path.Combine(_plugins, "missing"))).FindProviderFolders());

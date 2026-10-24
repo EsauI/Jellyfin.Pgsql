@@ -44,8 +44,9 @@ internal static class ConnectionSettingsMapper
     /// </summary>
     /// <param name="settings">The submitted settings.</param>
     /// <param name="storedConnectionString">The connection string currently stored, if any.</param>
+    /// <param name="storedPassword">The password kept by the store, used when none is submitted.</param>
     /// <returns>The new connection string.</returns>
-    public static string Build(ConnectionSettings settings, string? storedConnectionString)
+    public static string Build(ConnectionSettings settings, string? storedConnectionString, string? storedPassword = null)
     {
         var stored = Parse(storedConnectionString);
         var builder = new NpgsqlConnectionStringBuilder(stored?.ConnectionString)
@@ -55,9 +56,12 @@ internal static class ConnectionSettingsMapper
             Username = settings.Username?.Trim(),
             Database = DatabaseNames.Resolve(settings.Database?.Trim(), settings.Username?.Trim()),
         };
-        if (!string.IsNullOrEmpty(settings.Password))
+        var password = !string.IsNullOrEmpty(settings.Password) ? settings.Password : storedPassword;
+        if (!string.IsNullOrEmpty(password))
         {
-            builder.Password = settings.Password;
+            // The store moves the password into a passfile when it saves; a stale reference must not outlive it.
+            builder.Password = password;
+            builder.Remove("Passfile");
         }
 
         return builder.ConnectionString;
@@ -83,6 +87,11 @@ internal static class ConnectionSettingsMapper
         if (string.IsNullOrWhiteSpace(settings.Username))
         {
             return "Enter the PostgreSQL user name.";
+        }
+
+        if (settings.Password?.Contains('\n', StringComparison.Ordinal) == true || settings.Password?.Contains('\r', StringComparison.Ordinal) == true)
+        {
+            return "The password cannot contain line breaks.";
         }
 
         var database = DatabaseNames.Resolve(settings.Database?.Trim(), settings.Username);

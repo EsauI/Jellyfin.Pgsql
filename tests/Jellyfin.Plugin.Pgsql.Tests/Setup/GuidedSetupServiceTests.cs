@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Jellyfin.Plugin.Pgsql.Setup;
@@ -36,15 +37,37 @@ public class GuidedSetupServiceTests
     }
 
     [Fact]
-    public async Task Apply_AllowsANewServerWithAnEmptyTarget()
+    public async Task Apply_RefusesAnEmptyTargetEvenBeforeTheWizardCompletes_BecauseAnInProcessRestartSkipsSeeding()
+    {
+        _store.IsServerSetUp.Returns(false);
+        Target(TargetState.Empty);
+        var result = await Service().ApplyAsync(Settings, CancellationToken.None);
+        Assert.False(result.Succeeded);
+        _store.DidNotReceive().SavePostgreSql(Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Apply_ExplainsThatAnEmptyTargetNeedsTheCurrentDataMigratedFirst()
     {
         _store.IsServerSetUp.Returns(false);
         Target(TargetState.Empty);
 
-        var result = await Service().ApplyAsync(Settings, TestContext.Current.CancellationToken);
+        var result = await Service().ApplyAsync(Settings, CancellationToken.None);
 
-        Assert.True(result.Succeeded);
-        _store.Received(1).SavePostgreSql(Arg.Is<string>(s => s.Contains("Host=db", StringComparison.Ordinal)));
+        Assert.Contains("empty", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("migrated", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Test_ReportsTheSameBlockerForAnEmptyTargetOnAServerThatIsNotSetUp()
+    {
+        _store.IsServerSetUp.Returns(false);
+        Target(TargetState.Empty);
+
+        var assessment = await Service().TestAsync(Settings, CancellationToken.None);
+
+        Assert.False(assessment.CanApply);
+        Assert.Contains("migrated", Assert.Single(assessment.Blockers), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -119,8 +142,58 @@ public class GuidedSetupServiceTests
     }
 
     [Fact]
+    public async Task Test_UsesThePasswordKeptByTheStoreWhenNoneIsSubmitted()
+    {
+        _store.ReadPassword().Returns("from-the-passfile");
+        Target(TargetState.JellyfinSchema);
+
+        await Service().TestAsync(new ConnectionSettings { Host = "db", Username = "jf" }, CancellationToken.None);
+
+        await _checker.Received(1).CheckAsync(Arg.Is<string>(s => s.Contains("Password=from-the-passfile", StringComparison.Ordinal)), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Apply_HandsTheSubmittedPasswordToTheStoreSoItNeverReachesDatabaseXmlThroughTheService()
+    {
+        _store.ReadPassword().Returns("old");
+        Target(TargetState.JellyfinSchema);
+
+        await Service().ApplyAsync(Settings, CancellationToken.None);
+
+        _store.Received(1).SavePostgreSql(Arg.Is<string>(s => s.Contains("Password=pw", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void GetSettings_ReportsAPasswordWhenTheStoreKeepsOne()
+    {
+        _store.ReadPassword().Returns("from-the-passfile");
+
+        Assert.True(Service().GetSettings().HasPassword);
+    }
+
+    [Fact]
+    public void GetSettings_ReportsNoPasswordWhenNoneIsKept()
+    {
+        Assert.False(Service().GetSettings().HasPassword);
+    }
+
+    [Fact]
+    public void SwitchToSqlite_RefusesWhenTheServerAlreadyUsesSqlite_AndWritesNothing()
+    {
+        _store.SqliteDatabaseExists.Returns(true);
+        _store.Read().Returns(new DatabaseConfigurationOptions { DatabaseType = "Jellyfin-SQLite" });
+
+        var result = Service().SwitchToSqlite();
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("already", result.Message, StringComparison.OrdinalIgnoreCase);
+        _store.DidNotReceive().SaveSqlite();
+    }
+
+    [Fact]
     public void SwitchToSqlite_WritesSqlite()
     {
+        UsePostgreSql();
         _store.SqliteDatabaseExists.Returns(true);
 
         var result = Service().SwitchToSqlite();
@@ -132,6 +205,7 @@ public class GuidedSetupServiceTests
     [Fact]
     public void SwitchToSqlite_StatesItIsARollbackAndShowsHowOldJellyfinDbIs()
     {
+        UsePostgreSql();
         _store.SqliteDatabaseExists.Returns(true);
         _store.SqliteLastModifiedUtc.Returns(new DateTime(2026, 10, 1, 12, 30, 0, DateTimeKind.Utc));
 
@@ -165,6 +239,7 @@ public class GuidedSetupServiceTests
     [Fact]
     public void SwitchToSqlite_RefusesWhenJellyfinDbIsMissing()
     {
+        UsePostgreSql();
         _store.SqliteDatabaseExists.Returns(false);
 
         var result = Service().SwitchToSqlite();
@@ -172,6 +247,13 @@ public class GuidedSetupServiceTests
         Assert.False(result.Succeeded);
         _store.DidNotReceive().SaveSqlite();
     }
+
+    private void UsePostgreSql()
+        => _store.Read().Returns(new DatabaseConfigurationOptions
+        {
+            DatabaseType = "PLUGIN_PROVIDER",
+            CustomProviderOptions = new CustomDatabaseOptions { PluginName = "PostgreSQL", PluginAssembly = "Jellyfin.Plugin.Pgsql.dll", ConnectionString = "Host=db;Username=jf" },
+        });
 
     private GuidedSetupService Service() => new(_store, _checker, _folders);
 

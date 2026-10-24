@@ -24,6 +24,12 @@ public interface IDatabaseConfigurationStore
     DatabaseConfigurationOptions Read();
 
     /// <summary>
+    /// Reads the password kept for the PostgreSQL connection.
+    /// </summary>
+    /// <returns>The password, or <see langword="null"/> when none is kept.</returns>
+    string? ReadPassword();
+
+    /// <summary>
     /// Points the server at this plugin's PostgreSQL provider.
     /// </summary>
     /// <param name="connectionString">The connection string.</param>

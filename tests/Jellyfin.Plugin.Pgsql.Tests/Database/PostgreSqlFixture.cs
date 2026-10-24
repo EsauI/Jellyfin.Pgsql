@@ -87,20 +87,22 @@ public sealed class PostgreSqlFixture : IAsyncLifetime
     /// owns, and returns a provider wired to that database as that role.
     /// </summary>
     /// <param name="createDb">Whether the role gets the <c>CREATEDB</c> privilege.</param>
+    /// <param name="password">The role's password.</param>
     /// <returns>The new database, reachable only as the restricted role.</returns>
-    public async Task<TestDatabase> CreateRestrictedRoleDatabaseAsync(bool createDb = true)
+    public async Task<TestDatabase> CreateRestrictedRoleDatabaseAsync(bool createDb = true, string password = "restricted")
     {
+        ArgumentNullException.ThrowIfNull(password);
         var suffix = Guid.NewGuid().ToString("N");
         var role = "jf_role_" + suffix;
         var name = "jf_" + suffix;
-        await ExecuteAsAdminAsync($"CREATE ROLE {Quote(role)} LOGIN PASSWORD 'restricted' {(createDb ? "CREATEDB" : "NOCREATEDB")} NOSUPERUSER");
+        await ExecuteAsAdminAsync($"CREATE ROLE {Quote(role)} LOGIN PASSWORD '{password.Replace("'", "''", StringComparison.Ordinal)}' {(createDb ? "CREATEDB" : "NOCREATEDB")} NOSUPERUSER");
         await ExecuteAsAdminAsync($"CREATE DATABASE {Quote(name)} OWNER {Quote(role)}");
 
         var connectionString = new NpgsqlConnectionStringBuilder(_container.GetConnectionString())
         {
             Database = name,
             Username = role,
-            Password = "restricted",
+            Password = password,
         }.ConnectionString;
         var database = new TestDatabase(connectionString);
         await using var context = database.CreateContext();

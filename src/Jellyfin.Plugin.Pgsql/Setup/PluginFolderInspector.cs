@@ -21,10 +21,12 @@ public class PluginFolderInspector(IApplicationPaths applicationPaths) : IPlugin
             return [];
         }
 
+        // Mirrors how the server picks the provider folder (case-insensitive prefix, default ordering), so the first
+        // folder listed here is the one Jellyfin actually loads.
         return Directory.EnumerateDirectories(path)
             .Select(d => Path.GetFileName(d))
-            .Where(n => n.StartsWith(Plugin.PluginName, StringComparison.Ordinal))
-            .Order(StringComparer.Ordinal)
+            .Where(n => n.StartsWith(Plugin.PluginName, StringComparison.OrdinalIgnoreCase))
+            .Order()
             .ToList();
     }
 }
