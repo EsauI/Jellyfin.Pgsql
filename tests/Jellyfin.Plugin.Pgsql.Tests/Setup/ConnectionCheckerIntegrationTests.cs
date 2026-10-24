@@ -103,6 +103,28 @@ public class ConnectionCheckerIntegrationTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
+    public async Task Check_TreatsAnotherApplicationsInitialCreateAsForeign()
+    {
+        var database = await fixture.CreateEmptyDatabaseAsync();
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestContext.Current.CancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE "__EFMigrationsHistory" ("MigrationId" varchar(150) PRIMARY KEY, "ProductVersion" varchar(32) NOT NULL);
+                INSERT INTO "__EFMigrationsHistory" VALUES ('20200101000000_InitialCreate', '8.0.0');
+                CREATE TABLE "Orders" (id int);
+                """;
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+
+        var result = await _checker.CheckAsync(database.ConnectionString, TestContext.Current.CancellationToken);
+
+        Assert.Equal(TargetState.Other, result.TargetState);
+    }
+
+    [Fact]
     public async Task Check_WithAWrongPassword_ExplainsWithoutEchoingIt()
     {
         var database = await fixture.CreateRestrictedRoleDatabaseAsync();

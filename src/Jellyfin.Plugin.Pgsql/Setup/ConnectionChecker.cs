@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql;
 
 namespace Jellyfin.Plugin.Pgsql.Setup;
@@ -13,8 +15,11 @@ namespace Jellyfin.Plugin.Pgsql.Setup;
 public class ConnectionChecker : IConnectionChecker
 {
     private const string HistoryTable = "__EFMigrationsHistory";
-    private const string BaselineSuffix = "_InitialCreate";
     private static readonly TimeSpan OverallTimeout = TimeSpan.FromSeconds(20);
+
+    // Only this plugin's baseline marks a Jellyfin schema; another application's "*_InitialCreate" does not.
+    private static readonly string BaselineMigrationId =
+        typeof(Migrations.InitialCreate).GetCustomAttribute<MigrationAttribute>()!.Id;
 
     /// <inheritdoc />
     public async Task<ConnectionAssessment> CheckAsync(string connectionString, CancellationToken cancellationToken)
@@ -120,7 +125,7 @@ public class ConnectionChecker : IConnectionChecker
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     rows++;
-                    if (reader.GetString(0).EndsWith(BaselineSuffix, StringComparison.Ordinal))
+                    if (string.Equals(reader.GetString(0), BaselineMigrationId, StringComparison.Ordinal))
                     {
                         return TargetState.JellyfinSchema;
                     }
