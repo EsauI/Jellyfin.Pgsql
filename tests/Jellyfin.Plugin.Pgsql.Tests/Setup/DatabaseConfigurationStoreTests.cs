@@ -46,7 +46,7 @@ public sealed class DatabaseConfigurationStoreTests : IDisposable
         {
             DatabaseType = "PLUGIN_PROVIDER",
             LockingBehavior = DatabaseLockingBehaviorTypes.Optimistic,
-            CustomProviderOptions = new CustomDatabaseOptions { PluginName = "PostgreSQL", PluginAssembly = "Jellyfin.Plugin.Pgsql.dll", ConnectionString = "Host=db" },
+            CustomProviderOptions = KeptOptions(),
         });
 
         new DatabaseConfigurationStore(_manager, _paths).SaveSqlite();
@@ -54,7 +54,10 @@ public sealed class DatabaseConfigurationStoreTests : IDisposable
         _manager.Received(1).SaveConfiguration(
             "database",
             Arg.Is<object>(o => ((DatabaseConfigurationOptions)o).DatabaseType == "Jellyfin-SQLite"
-                && ((DatabaseConfigurationOptions)o).CustomProviderOptions == null
+                && ((DatabaseConfigurationOptions)o).CustomProviderOptions!.PluginName == "PostgreSQL"
+                && ((DatabaseConfigurationOptions)o).CustomProviderOptions!.PluginAssembly == "Jellyfin.Plugin.Pgsql.dll"
+                && ((DatabaseConfigurationOptions)o).CustomProviderOptions!.ConnectionString == "Host=db;Passfile=/config/pgsql.pgpass"
+                && ((DatabaseConfigurationOptions)o).CustomProviderOptions!.Options.Count == 1
                 && ((DatabaseConfigurationOptions)o).LockingBehavior == DatabaseLockingBehaviorTypes.Optimistic));
     }
 
@@ -226,6 +229,54 @@ public sealed class DatabaseConfigurationStoreTests : IDisposable
         var option = Assert.Single(saved().CustomProviderOptions!.Options);
         Assert.Equal("tuning", option.Key);
         Assert.Equal("on", option.Value);
+    }
+
+    [Fact]
+    public void ReadPassword_MatchesThePassfileEntryByHostPortAndUsername_NotTheFirstLine()
+    {
+        var passfile = Path.Combine(_directory, "custom.pgpass");
+        File.WriteAllText(passfile, "# comment\nother:5432:*:jf:wrong-host\ndb:5433:*:jf:wrong-port\ndb:5432:*:someone:wrong-user\ndb:5432:*:jf:right\n");
+        _manager.GetConfiguration("database").Returns(new DatabaseConfigurationOptions
+        {
+            DatabaseType = "PLUGIN_PROVIDER",
+            CustomProviderOptions = new CustomDatabaseOptions { PluginName = "PostgreSQL", PluginAssembly = "Jellyfin.Plugin.Pgsql.dll", ConnectionString = $"Host=db;Username=jf;Passfile={passfile}" },
+        });
+
+        Assert.Equal("right", new DatabaseConfigurationStore(_manager, _paths).ReadPassword());
+    }
+
+    [Fact]
+    public void ReadPassword_ReturnsNullWhenNoPassfileEntryMatchesTheStoredConnection()
+    {
+        var passfile = Path.Combine(_directory, "custom.pgpass");
+        File.WriteAllText(passfile, "other:5432:*:jf:wrong-host\n");
+        _manager.GetConfiguration("database").Returns(new DatabaseConfigurationOptions
+        {
+            DatabaseType = "PLUGIN_PROVIDER",
+            CustomProviderOptions = new CustomDatabaseOptions { PluginName = "PostgreSQL", PluginAssembly = "Jellyfin.Plugin.Pgsql.dll", ConnectionString = $"Host=db;Username=jf;Passfile={passfile}" },
+        });
+
+        Assert.Null(new DatabaseConfigurationStore(_manager, _paths).ReadPassword());
+    }
+
+    [Fact]
+    public void SavePostgreSql_WhenSavingDatabaseXmlFails_KeepsThePreviousPassfileAndLeavesNoTemporaryFiles()
+    {
+        var (store, _) = NewStore();
+        store.SavePostgreSql("Host=db;Username=jf;Password=first");
+        _manager.When(m => m.SaveConfiguration("database", Arg.Any<object>())).Do(_ => throw new IOException("disk full"));
+
+        Assert.Throws<IOException>(() => store.SavePostgreSql("Host=other;Username=jf;Password=second"));
+
+        Assert.Equal("db:5432:*:jf:first", File.ReadAllText(PassfilePath).Trim());
+        Assert.Equal([PassfilePath], Directory.GetFiles(_directory));
+    }
+
+    private static CustomDatabaseOptions KeptOptions()
+    {
+        var options = new CustomDatabaseOptions { PluginName = "PostgreSQL", PluginAssembly = "Jellyfin.Plugin.Pgsql.dll", ConnectionString = "Host=db;Passfile=/config/pgsql.pgpass" };
+        options.Options.Add(new CustomDatabaseOption { Key = "tuning", Value = "on" });
+        return options;
     }
 
     private static bool IsPostgreSql(DatabaseConfigurationOptions o)

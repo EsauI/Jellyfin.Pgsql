@@ -100,6 +100,22 @@ internal static class ConnectionSettingsMapper
             : null;
     }
 
+    /// <summary>
+    /// Tells whether the stored password may be sent to the submitted server: only when host, port and user name are
+    /// the stored ones, so a changed host never receives a password that was entered for another one.
+    /// </summary>
+    /// <param name="settings">The submitted settings.</param>
+    /// <param name="storedConnectionString">The connection string currently stored, if any.</param>
+    /// <returns><see langword="true"/> when the credentials the stored password belongs to are unchanged.</returns>
+    public static bool KeepsStoredCredentials(ConnectionSettings settings, string? storedConnectionString)
+    {
+        var stored = Parse(storedConnectionString);
+        return stored is not null
+            && string.Equals(settings.Host?.Trim(), stored.Host?.Trim(), StringComparison.OrdinalIgnoreCase)
+            && settings.Port == stored.Port
+            && string.Equals(settings.Username?.Trim(), stored.Username, StringComparison.Ordinal);
+    }
+
     private static NpgsqlConnectionStringBuilder? Parse(string? connectionString)
     {
         if (string.IsNullOrWhiteSpace(connectionString))

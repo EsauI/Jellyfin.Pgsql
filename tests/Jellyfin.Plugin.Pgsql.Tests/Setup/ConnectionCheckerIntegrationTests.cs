@@ -61,8 +61,8 @@ public class ConnectionCheckerIntegrationTests(PostgreSqlFixture fixture)
 
         var result = await _checker.CheckAsync(asRole.ConnectionString, TestContext.Current.CancellationToken);
 
-        // The role may not even connect to a database it was not granted; either way ownership is never claimed.
-        Assert.False(result.Connected && result.OwnsDatabase);
+        Assert.True(result.Connected);
+        Assert.False(result.OwnsDatabase);
     }
 
     [Fact]

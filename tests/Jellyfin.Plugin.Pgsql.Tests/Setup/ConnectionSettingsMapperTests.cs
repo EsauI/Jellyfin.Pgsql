@@ -83,6 +83,26 @@ public class ConnectionSettingsMapperTests
         Assert.True(string.IsNullOrEmpty(built.Passfile));
     }
 
+    [Theory]
+    [InlineData("db", 5432, "jf", true)]
+    [InlineData(" DB ", 5432, "jf", true)]
+    [InlineData("other", 5432, "jf", false)]
+    [InlineData("db", 5433, "jf", false)]
+    [InlineData("db", 5432, "JF", false)]
+    [InlineData("db", 5432, "other", false)]
+    public void KeepsStoredCredentials_OnlyWhenHostPortAndUsernameAreUnchanged(string host, int port, string username, bool expected)
+    {
+        var settings = new ConnectionSettings { Host = host, Port = port, Username = username };
+
+        Assert.Equal(expected, ConnectionSettingsMapper.KeepsStoredCredentials(settings, "Host=db;Username=jf;Passfile=/config/pgsql.pgpass"));
+    }
+
+    [Fact]
+    public void KeepsStoredCredentials_IsFalseWithoutAStoredConnection()
+    {
+        Assert.False(ConnectionSettingsMapper.KeepsStoredCredentials(new ConnectionSettings { Host = "db", Username = "jf" }, null));
+    }
+
     [Fact]
     public void Validate_RejectsAPasswordWithLineBreaks_BecauseTheyWouldCorruptThePassfile()
     {

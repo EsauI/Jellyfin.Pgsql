@@ -51,45 +51,7 @@ public class GuidedSetupService(IDatabaseConfigurationStore store, IConnectionCh
     /// <returns>What was found and why the settings cannot be applied, if they cannot.</returns>
     public async Task<ConnectionAssessment> TestAsync(ConnectionSettings settings, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(settings);
-
-        var invalid = ConnectionSettingsMapper.Validate(settings);
-        if (invalid is not null)
-        {
-            return new ConnectionAssessment { Blockers = [invalid] };
-        }
-
-        var connectionString = ConnectionSettingsMapper.Build(settings, store.Read().CustomProviderOptions?.ConnectionString, store.ReadPassword());
-        var assessment = await checker.CheckAsync(connectionString, cancellationToken).ConfigureAwait(false);
-        if (!assessment.Connected)
-        {
-            return assessment;
-        }
-
-        var blockers = new List<string>(assessment.Blockers);
-        if (!assessment.CanCreateDatabase)
-        {
-            blockers.Add("The PostgreSQL role needs the CREATEDB privilege: the plugin clones the database to back it up. Run ALTER ROLE <role> CREATEDB.");
-        }
-
-        if (!assessment.OwnsDatabase)
-        {
-            blockers.Add("The PostgreSQL role must own the database (or be a superuser): backups and restores clone it. Run ALTER DATABASE <database> OWNER TO <role>.");
-        }
-
-        switch (assessment.TargetState)
-        {
-            case TargetState.Other:
-                blockers.Add("The database already contains tables that are not Jellyfin's. Use an empty database.");
-                break;
-            case TargetState.Empty:
-                // Jellyfin seeds an empty database only on the first start of the process; the restart this plugin triggers
-                // happens in-process and skips that, so an empty target would leave the server unable to start.
-                blockers.Add("The database is empty, and Jellyfin cannot start on an empty database. The current data has to be migrated into it first (the \"Migrate\" action arrives in a later version of this plugin).");
-                break;
-        }
-
-        assessment.Blockers = blockers;
+        var (assessment, _) = await AssessAsync(settings, cancellationToken).ConfigureAwait(false);
         return assessment;
     }
 
@@ -101,13 +63,14 @@ public class GuidedSetupService(IDatabaseConfigurationStore store, IConnectionCh
     /// <returns>Whether the file was written; the caller restarts the server on success.</returns>
     public async Task<SetupResult> ApplyAsync(ConnectionSettings settings, CancellationToken cancellationToken)
     {
-        var assessment = await TestAsync(settings, cancellationToken).ConfigureAwait(false);
-        if (!assessment.CanApply)
+        var (assessment, connectionString) = await AssessAsync(settings, cancellationToken).ConfigureAwait(false);
+        if (!assessment.CanApply || connectionString is null)
         {
             return new SetupResult(false, "Nothing was changed. " + string.Join(" ", assessment.Blockers));
         }
 
-        store.SavePostgreSql(ConnectionSettingsMapper.Build(settings, store.Read().CustomProviderOptions?.ConnectionString, store.ReadPassword()));
+        // The very connection string that was checked is the one saved: the store is not read again in between.
+        store.SavePostgreSql(connectionString);
         return new SetupResult(true, "Saved. Jellyfin is restarting to use PostgreSQL.");
     }
 
@@ -135,4 +98,65 @@ public class GuidedSetupService(IDatabaseConfigurationStore store, IConnectionCh
         => string.Create(
             CultureInfo.InvariantCulture,
             $"Switching back is a rollback, not a sync: jellyfin.db was last modified on {modifiedUtc:yyyy-MM-dd HH:mm} UTC and has not changed since Jellyfin moved to PostgreSQL. Everything changed since then (watch history, new items, users, settings stored in the database) exists only in PostgreSQL and will NOT appear in SQLite. The PostgreSQL data is kept untouched, so you can switch to PostgreSQL again.");
+
+    private async Task<(ConnectionAssessment Assessment, string? ConnectionString)> AssessAsync(ConnectionSettings settings, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        var invalid = ConnectionSettingsMapper.Validate(settings);
+        if (invalid is not null)
+        {
+            return (new ConnectionAssessment { Blockers = [invalid] }, null);
+        }
+
+        var storedConnectionString = store.Read().CustomProviderOptions?.ConnectionString;
+        string? storedPassword = null;
+        if (string.IsNullOrEmpty(settings.Password))
+        {
+            storedPassword = store.ReadPassword();
+            if (!ConnectionSettingsMapper.KeepsStoredCredentials(settings, storedConnectionString))
+            {
+                // The stored password was entered for another server or role; it is never replayed to a changed target.
+                if (!string.IsNullOrEmpty(storedPassword))
+                {
+                    return (new ConnectionAssessment { Blockers = ["Enter the password: the host, port or username changed."] }, null);
+                }
+
+                storedPassword = null;
+            }
+        }
+
+        var connectionString = ConnectionSettingsMapper.Build(settings, storedConnectionString, storedPassword);
+        var assessment = await checker.CheckAsync(connectionString, cancellationToken).ConfigureAwait(false);
+        if (!assessment.Connected)
+        {
+            return (assessment, connectionString);
+        }
+
+        var blockers = new List<string>(assessment.Blockers);
+        if (!assessment.CanCreateDatabase)
+        {
+            blockers.Add("The PostgreSQL role needs the CREATEDB privilege: the plugin clones the database to back it up. Run ALTER ROLE <role> CREATEDB.");
+        }
+
+        if (!assessment.OwnsDatabase)
+        {
+            blockers.Add("The PostgreSQL role must own the database (or be a superuser): backups and restores clone it. Run ALTER DATABASE <database> OWNER TO <role>.");
+        }
+
+        switch (assessment.TargetState)
+        {
+            case TargetState.Other:
+                blockers.Add("The database already contains tables that are not Jellyfin's. Use an empty database.");
+                break;
+            case TargetState.Empty:
+                // Jellyfin seeds an empty database only on the first start of the process; the restart this plugin triggers
+                // happens in-process and skips that, so an empty target would leave the server unable to start.
+                blockers.Add("The database is empty, and Jellyfin cannot start on an empty database. The current data has to be migrated into it first (the \"Migrate\" action arrives in a later version of this plugin).");
+                break;
+        }
+
+        assessment.Blockers = blockers;
+        return (assessment, connectionString);
+    }
 }

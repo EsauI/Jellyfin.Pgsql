@@ -1,5 +1,7 @@
 using System.Linq;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Jellyfin.Plugin.Pgsql.Api;
 using Jellyfin.Plugin.Pgsql.Setup;
@@ -54,10 +56,79 @@ public class PgsqlSetupControllerTests
     }
 
     [Fact]
+    public async Task Apply_WhenItSucceeds_RestartsExactlyOnce()
+    {
+        var (controller, store, systemManager) = Create(TargetState.JellyfinSchema);
+
+        var result = await controller.Apply(new ConnectionSettings { Host = "db", Username = "jf", Password = "pw" }, TestContext.Current.CancellationToken);
+
+        Assert.True(result.Value!.Succeeded);
+        store.Received(1).SavePostgreSql(Arg.Any<string>());
+        systemManager.Received(1).Restart();
+    }
+
+    [Fact]
+    public async Task Apply_WhenItIsRefused_NeverRestarts()
+    {
+        var (controller, store, systemManager) = Create(TargetState.Other);
+
+        var result = await controller.Apply(new ConnectionSettings { Host = "db", Username = "jf", Password = "pw" }, TestContext.Current.CancellationToken);
+
+        Assert.False(result.Value!.Succeeded);
+        store.DidNotReceiveWithAnyArgs().SavePostgreSql(default!);
+        systemManager.DidNotReceive().Restart();
+    }
+
+    [Fact]
+    public void SwitchToSqlite_WhenItSucceeds_RestartsExactlyOnce()
+    {
+        var (controller, store, systemManager) = Create(TargetState.JellyfinSchema);
+        store.Read().Returns(new DatabaseConfigurationOptions { DatabaseType = "PLUGIN_PROVIDER" });
+        store.SqliteDatabaseExists.Returns(true);
+
+        var result = controller.SwitchToSqlite();
+
+        Assert.True(result.Value!.Succeeded);
+        store.Received(1).SaveSqlite();
+        systemManager.Received(1).Restart();
+    }
+
+    [Fact]
+    public void SwitchToSqlite_WhenJellyfinDbIsMissing_NeverRestarts()
+    {
+        var (controller, store, systemManager) = Create(TargetState.JellyfinSchema);
+        store.Read().Returns(new DatabaseConfigurationOptions { DatabaseType = "PLUGIN_PROVIDER" });
+        store.SqliteDatabaseExists.Returns(false);
+
+        var result = controller.SwitchToSqlite();
+
+        Assert.False(result.Value!.Succeeded);
+        systemManager.DidNotReceive().Restart();
+    }
+
+    [Fact]
     public void Plugin_ExposesTheEmbeddedConfigurationPage()
     {
         var page = Assert.Single(new Plugin(NSubstitute.Substitute.For<MediaBrowser.Common.Configuration.IApplicationPaths>(), NSubstitute.Substitute.For<MediaBrowser.Model.Serialization.IXmlSerializer>()).GetPages());
 
         Assert.Contains(page.EmbeddedResourcePath, typeof(Plugin).Assembly.GetManifestResourceNames());
+    }
+
+    private static (PgsqlSetupController Controller, IDatabaseConfigurationStore Store, ISystemManager SystemManager) Create(TargetState target)
+    {
+        var store = Substitute.For<IDatabaseConfigurationStore>();
+        store.Read().Returns(new DatabaseConfigurationOptions { DatabaseType = "Jellyfin-SQLite" });
+        var checker = Substitute.For<IConnectionChecker>();
+        checker.CheckAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new ConnectionAssessment
+        {
+            Connected = true,
+            CanCreateDatabase = true,
+            OwnsDatabase = true,
+            TargetState = target,
+        });
+        var systemManager = Substitute.For<ISystemManager>();
+        var folders = Substitute.For<IPluginFolderInspector>();
+        folders.FindProviderFolders().Returns([]);
+        return (new PgsqlSetupController(new GuidedSetupService(store, checker, folders), systemManager), store, systemManager);
     }
 }

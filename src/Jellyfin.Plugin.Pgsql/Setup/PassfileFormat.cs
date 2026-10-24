@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 
 namespace Jellyfin.Plugin.Pgsql.Setup;
@@ -31,12 +32,18 @@ internal static class PassfileFormat
             Quote(password));
 
     /// <summary>
-    /// Reads the password of the first entry.
+    /// Reads the password of the first entry that matches the connection, the way Npgsql picks one: each of host, port,
+    /// database and user name must equal the entry's field or the entry must use <c>*</c> for it.
     /// </summary>
     /// <param name="content">The file content.</param>
-    /// <returns>The password, or <see langword="null"/> when the file has no entry.</returns>
-    public static string? ReadPassword(string content)
+    /// <param name="hosts">The hosts of the connection (any of them may match).</param>
+    /// <param name="port">The port.</param>
+    /// <param name="database">The database name.</param>
+    /// <param name="username">The login role.</param>
+    /// <returns>The password, or <see langword="null"/> when no entry matches.</returns>
+    public static string? ReadPassword(string content, IReadOnlyCollection<string> hosts, int port, string database, string username)
     {
+        var portText = port.ToString(CultureInfo.InvariantCulture);
         foreach (var line in content.Split('\n'))
         {
             var trimmed = line.TrimEnd('\r');
@@ -46,7 +53,11 @@ internal static class PassfileFormat
             }
 
             var fields = Split(trimmed);
-            if (fields.Count == 5)
+            if (fields.Count == 5
+                && (fields[0] == "*" || hosts.Contains(fields[0], System.StringComparer.OrdinalIgnoreCase))
+                && Matches(fields[1], portText)
+                && Matches(fields[2], database)
+                && Matches(fields[3], username))
             {
                 return fields[4];
             }
@@ -54,6 +65,8 @@ internal static class PassfileFormat
 
         return null;
     }
+
+    private static bool Matches(string field, string value) => field == "*" || field == value;
 
     private static string Quote(string value)
         => value.Replace("\\", "\\\\", System.StringComparison.Ordinal).Replace(":", "\\:", System.StringComparison.Ordinal);

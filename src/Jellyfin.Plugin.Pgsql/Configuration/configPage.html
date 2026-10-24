@@ -26,7 +26,8 @@
                     </div>
                     <div class="inputContainer">
                         <input is="emby-input" type="password" id="pgsqlPassword" label="Password" autocomplete="new-password" />
-                        <div class="fieldDescription">The password is kept in a private file next to the server configuration (readable only by the Jellyfin user), never in database.xml, and is never shown again. Leave empty to keep the stored one.</div>
+                        <div class="fieldDescription">The password is kept in a private file next to the server configuration (readable only by the Jellyfin user), never in database.xml, and is never shown again. Leave empty to keep the stored one while the host, port and user name stay the same.</div>
+                        <div class="fieldDescription" id="pgsqlPasswordHint" style="color: #cc3333;"></div>
                     </div>
                     <div id="pgsqlTestResult" style="margin: 1em 0;"></div>
                     <div>
@@ -41,6 +42,7 @@
             (function () {
                 var page = document.querySelector('#pgsqlConfigPage');
                 var switchBackNotice = '';
+                var loaded = null;
 
                 function el(id) { return page.querySelector('#' + id); }
 
@@ -61,6 +63,18 @@
                         username: el('pgsqlUsername').value.trim(),
                         password: el('pgsqlPassword').value
                     };
+                }
+
+                function updatePasswordHint() {
+                    var hint = el('pgsqlPasswordHint');
+                    if (!loaded || !loaded.hasPassword) {
+                        hint.textContent = '';
+                        return;
+                    }
+                    var changed = el('pgsqlHost').value.trim().toLowerCase() !== (loaded.host || '').trim().toLowerCase()
+                        || (parseInt(el('pgsqlPort').value, 10) || 0) !== loaded.port
+                        || el('pgsqlUsername').value.trim() !== (loaded.username || '');
+                    hint.textContent = changed ? 'Enter the password: the host, port or username changed, so the stored one is not reused.' : '';
                 }
 
                 function lines(container, items, color) {
@@ -107,6 +121,8 @@
                         el('pgsqlUsername').value = s.username || '';
                         el('pgsqlPassword').value = '';
                         el('pgsqlPassword').placeholder = s.hasPassword ? 'unchanged' : '';
+                        loaded = { host: s.host, port: s.port || 5432, username: s.username, hasPassword: s.hasPassword };
+                        updatePasswordHint();
                         el('pgsqlCurrent').textContent = s.usesPostgreSql
                             ? 'Jellyfin is using PostgreSQL.'
                             : 'Jellyfin is using ' + s.databaseType + '.';
@@ -143,6 +159,9 @@
                 }
 
                 page.addEventListener('pageshow', load);
+                ['pgsqlHost', 'pgsqlPort', 'pgsqlUsername'].forEach(function (id) {
+                    el(id).addEventListener('input', updatePasswordHint);
+                });
 
                 el('pgsqlTest').addEventListener('click', function () {
                     Dashboard.showLoadingMsg();

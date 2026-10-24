@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using Jellyfin.Database.Implementations.DbConfiguration;
+using Jellyfin.Plugin.Pgsql.Database;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Configuration;
 using Npgsql;
@@ -43,10 +44,17 @@ public class DatabaseConfigurationStore(IServerConfigurationManager configuratio
             return stored.Password;
         }
 
+        if (stored is null || string.IsNullOrWhiteSpace(stored.Host))
+        {
+            return null;
+        }
+
         try
         {
-            var path = string.IsNullOrEmpty(stored?.Passfile) ? PassfilePath : stored.Passfile;
-            return PassfileFormat.ReadPassword(File.ReadAllText(path));
+            var path = string.IsNullOrEmpty(stored.Passfile) ? PassfilePath : stored.Passfile;
+            var hosts = stored.Host.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            var username = stored.Username ?? string.Empty;
+            return PassfileFormat.ReadPassword(File.ReadAllText(path), hosts, stored.Port, DatabaseNames.Resolve(stored.Database, username)!, username);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -61,45 +69,77 @@ public class DatabaseConfigurationStore(IServerConfigurationManager configuratio
         var builder = new NpgsqlConnectionStringBuilder(connectionString);
 
         // database.xml can be read by any signed-in user through the server API, so the password lives in a passfile.
-        if (!string.IsNullOrEmpty(builder.Password))
+        // The new passfile is staged first and only moved into place once database.xml is saved, so a failure in
+        // between leaves the previous working pair.
+        string? staged = null;
+        try
         {
-            WritePassfile(builder);
-            builder.Remove("Password");
-            builder.Passfile = PassfilePath;
-        }
-
-        var provider = new CustomDatabaseOptions
-        {
-            PluginName = Plugin.PluginName,
-
-            // The .dll is required: Jellyfin swaps the extension to load the assembly.
-            PluginAssembly = "Jellyfin.Plugin.Pgsql.dll",
-            ConnectionString = builder.ConnectionString,
-        };
-        foreach (var option in existing.CustomProviderOptions?.Options ?? [])
-        {
-            provider.Options.Add(option);
-        }
-
-        configurationManager.SaveConfiguration(
-            StoreKey,
-            new DatabaseConfigurationOptions
+            if (!string.IsNullOrEmpty(builder.Password))
             {
-                DatabaseType = "PLUGIN_PROVIDER",
-                LockingBehavior = existing.LockingBehavior,
-                CustomProviderOptions = provider,
-            });
+                staged = StagePassfile(builder);
+                builder.Remove("Password");
+                builder.Passfile = PassfilePath;
+            }
+
+            var provider = new CustomDatabaseOptions
+            {
+                PluginName = Plugin.PluginName,
+
+                // The .dll is required: Jellyfin swaps the extension to load the assembly.
+                PluginAssembly = "Jellyfin.Plugin.Pgsql.dll",
+                ConnectionString = builder.ConnectionString,
+            };
+            foreach (var option in existing.CustomProviderOptions?.Options ?? [])
+            {
+                provider.Options.Add(option);
+            }
+
+            configurationManager.SaveConfiguration(
+                StoreKey,
+                new DatabaseConfigurationOptions
+                {
+                    DatabaseType = "PLUGIN_PROVIDER",
+                    LockingBehavior = existing.LockingBehavior,
+                    CustomProviderOptions = provider,
+                });
+
+            if (staged is not null)
+            {
+                try
+                {
+                    File.Move(staged, PassfilePath, overwrite: true);
+                    staged = null;
+                }
+                catch
+                {
+                    configurationManager.SaveConfiguration(StoreKey, existing);
+                    throw;
+                }
+            }
+        }
+        finally
+        {
+            if (staged is not null)
+            {
+                File.Delete(staged);
+            }
+        }
     }
 
     /// <inheritdoc />
     public void SaveSqlite()
     {
+        var existing = Read();
         configurationManager.SaveConfiguration(
             StoreKey,
             new DatabaseConfigurationOptions
             {
                 DatabaseType = "Jellyfin-SQLite",
-                LockingBehavior = Read().LockingBehavior,
+                LockingBehavior = existing.LockingBehavior,
+
+                // Jellyfin only reads these for PLUGIN_PROVIDER (the SQLite provider looks at its own option keys only),
+                // so keeping them lets the page pre-fill the form when the user switches to PostgreSQL again.
+                CustomProviderOptions = existing.CustomProviderOptions,
             });
     }
 
@@ -120,7 +160,7 @@ public class DatabaseConfigurationStore(IServerConfigurationManager configuratio
         }
     }
 
-    private void WritePassfile(NpgsqlConnectionStringBuilder connection)
+    private string StagePassfile(NpgsqlConnectionStringBuilder connection)
     {
         var content = new StringBuilder();
         foreach (var host in (connection.Host ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
@@ -147,7 +187,7 @@ public class DatabaseConfigurationStore(IServerConfigurationManager configuratio
                 stream.Write(bytes);
             }
 
-            File.Move(temporary, path, overwrite: true);
+            return temporary;
         }
         catch
         {

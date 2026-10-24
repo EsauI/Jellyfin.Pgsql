@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.DbConfiguration;
@@ -144,6 +145,7 @@ public class GuidedSetupServiceTests
     [Fact]
     public async Task Test_UsesThePasswordKeptByTheStoreWhenNoneIsSubmitted()
     {
+        UsePostgreSql();
         _store.ReadPassword().Returns("from-the-passfile");
         Target(TargetState.JellyfinSchema);
 
@@ -161,6 +163,101 @@ public class GuidedSetupServiceTests
         await Service().ApplyAsync(Settings, CancellationToken.None);
 
         _store.Received(1).SavePostgreSql(Arg.Is<string>(s => s.Contains("Password=pw", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("other", 5432, "jf")]
+    [InlineData("db", 5433, "jf")]
+    [InlineData("db", 5432, "someone-else")]
+    public async Task Test_RequiresAPassword_WhenHostPortOrUsernameChangedAndNoneIsSubmitted(string host, int port, string username)
+    {
+        UsePostgreSql();
+        _store.ReadPassword().Returns("stored");
+        Target(TargetState.JellyfinSchema);
+
+        var assessment = await Service().TestAsync(new ConnectionSettings { Host = host, Port = port, Username = username }, CancellationToken.None);
+
+        Assert.False(assessment.CanApply);
+        Assert.Contains("Enter the password: the host, port or username changed", Assert.Single(assessment.Blockers), StringComparison.Ordinal);
+        await _checker.DidNotReceiveWithAnyArgs().CheckAsync(default!, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Apply_RequiresAPassword_WhenTheHostChanged_AndWritesNothing()
+    {
+        UsePostgreSql();
+        _store.ReadPassword().Returns("stored");
+        Target(TargetState.JellyfinSchema);
+
+        var result = await Service().ApplyAsync(new ConnectionSettings { Host = "other", Username = "jf" }, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("Enter the password", result.Message, StringComparison.Ordinal);
+        await _checker.DidNotReceiveWithAnyArgs().CheckAsync(default!, TestContext.Current.CancellationToken);
+        _store.DidNotReceiveWithAnyArgs().SavePostgreSql(default!);
+    }
+
+    [Fact]
+    public async Task Test_ReusesTheStoredPassword_WhenOnlyTheHostCaseAndSpacingDiffer()
+    {
+        UsePostgreSql();
+        _store.ReadPassword().Returns("stored");
+        Target(TargetState.JellyfinSchema);
+
+        await Service().TestAsync(new ConnectionSettings { Host = " DB ", Username = "jf" }, CancellationToken.None);
+
+        await _checker.Received(1).CheckAsync(Arg.Is<string>(s => s.Contains("Password=stored", StringComparison.Ordinal)), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Test_UsesTheSubmittedPassword_WhenTheHostChanged()
+    {
+        UsePostgreSql();
+        _store.ReadPassword().Returns("stored");
+        Target(TargetState.JellyfinSchema);
+
+        await Service().TestAsync(new ConnectionSettings { Host = "other", Username = "jf", Password = "fresh" }, CancellationToken.None);
+
+        await _checker.Received(1).CheckAsync(
+            Arg.Is<string>(s => s.Contains("Password=fresh", StringComparison.Ordinal) && !s.Contains("stored", StringComparison.Ordinal)),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Apply_ChecksAndSavesTheSameConnection_ReadingTheStoreOnce()
+    {
+        UsePostgreSql();
+        _store.ReadPassword().Returns("stored");
+        Target(TargetState.JellyfinSchema);
+
+        var result = await Service().ApplyAsync(new ConnectionSettings { Host = "db", Username = "jf" }, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        var checkedString = (string)_checker.ReceivedCalls().Single().GetArguments()[0]!;
+        var savedString = (string)_store.ReceivedCalls().Single(c => c.GetMethodInfo().Name == nameof(IDatabaseConfigurationStore.SavePostgreSql)).GetArguments()[0]!;
+        Assert.Equal(checkedString, savedString);
+        _store.Received(1).Read();
+        _store.Received(1).ReadPassword();
+    }
+
+    [Fact]
+    public void GetSettings_OnSqlite_StillShowsTheKeptPostgreSqlSettings()
+    {
+        _store.Read().Returns(new DatabaseConfigurationOptions
+        {
+            DatabaseType = "Jellyfin-SQLite",
+            CustomProviderOptions = new CustomDatabaseOptions { PluginName = "PostgreSQL", PluginAssembly = "Jellyfin.Plugin.Pgsql.dll", ConnectionString = "Host=db.local;Port=6543;Database=media;Username=jf;Passfile=/config/pgsql.pgpass" },
+        });
+        _store.ReadPassword().Returns("kept");
+
+        var current = Service().GetSettings();
+
+        Assert.False(current.UsesPostgreSql);
+        Assert.Equal("db.local", current.Host);
+        Assert.Equal(6543, current.Port);
+        Assert.Equal("media", current.Database);
+        Assert.Equal("jf", current.Username);
+        Assert.True(current.HasPassword);
     }
 
     [Fact]
