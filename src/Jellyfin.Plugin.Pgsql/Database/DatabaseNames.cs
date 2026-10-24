@@ -27,6 +27,17 @@ internal static class DatabaseNames
         => string.Create(CultureInfo.InvariantCulture, $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"");
 
     /// <summary>
+    /// Resolves the database a connection uses: PostgreSQL connects to the database named after the user when none is given.
+    /// </summary>
+    /// <param name="database">The configured database name, if any.</param>
+    /// <param name="username">The configured user name, if any.</param>
+    /// <returns>The database name, or <see langword="null"/> when neither value is set.</returns>
+    public static string? Resolve(string? database, string? username)
+        => string.IsNullOrWhiteSpace(database)
+            ? (string.IsNullOrWhiteSpace(username) ? null : username)
+            : database;
+
+    /// <summary>
     /// Gets the name of the database that holds a backup.
     /// </summary>
     /// <param name="database">The live database name.</param>

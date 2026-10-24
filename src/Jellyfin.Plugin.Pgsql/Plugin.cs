@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using Jellyfin.Plugin.Pgsql.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
+using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 
 namespace Jellyfin.Plugin.Pgsql;
@@ -9,7 +11,7 @@ namespace Jellyfin.Plugin.Pgsql;
 /// <summary>
 /// Entry point of the PostgreSQL database provider plugin.
 /// </summary>
-public class Plugin : BasePlugin<PluginConfiguration>
+public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     /// <summary>
     /// The plugin name. Jellyfin locates a database provider plugin by the plugins
@@ -46,4 +48,18 @@ public class Plugin : BasePlugin<PluginConfiguration>
 
     /// <inheritdoc />
     public override string Description => "PostgreSQL database provider for Jellyfin.";
+
+    /// <inheritdoc />
+    public IEnumerable<PluginPageInfo> GetPages()
+    {
+        yield return new PluginPageInfo
+        {
+            Name = PluginName,
+            DisplayName = "PostgreSQL",
+            EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html",
+            EnableInMainMenu = true,
+            MenuSection = "server",
+            MenuIcon = "storage",
+        };
+    }
 }
